@@ -1,0 +1,38 @@
+/** PNG export: rasterise the (animation-stripped) SVG at a chosen output
+ *  resolution onto a canvas. Transparency is preserved when no background
+ *  is requested. */
+
+import { downloadBlob } from './svg';
+
+/** Remove CSS animations so the raster snapshot is the finished state. */
+function stripAnimations(svg: string): string {
+  return svg
+    .replace(/animation:[^;}"]*[;]?/g, '')
+    .replace(/animation-delay:[^;}"]*[;]?/g, '')
+    .replace(/stroke-dashoffset:\s*\d+[;]?/g, '');
+}
+
+export async function exportPng(svg: string, sizePx: number, filename: string): Promise<void> {
+  const clean = stripAnimations(svg);
+  const url = URL.createObjectURL(new Blob([clean], { type: 'image/svg+xml' }));
+  try {
+    const img = new Image();
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('Could not rasterise SVG'));
+      img.src = url;
+    });
+    const cv = document.createElement('canvas');
+    cv.width = sizePx;
+    cv.height = sizePx;
+    const cx = cv.getContext('2d')!;
+    cx.imageSmoothingEnabled = true;
+    cx.imageSmoothingQuality = 'high';
+    cx.drawImage(img, 0, 0, sizePx, sizePx);
+    const blob = await new Promise<Blob | null>((resolve) => cv.toBlob(resolve, 'image/png'));
+    if (!blob) throw new Error('PNG encoding failed');
+    downloadBlob(blob, filename);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
