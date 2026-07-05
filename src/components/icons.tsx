@@ -85,6 +85,35 @@ export const IconImport = (p: IconProps) => (
   </svg>
 );
 
+export const IconNew = (p: IconProps) => (
+  <svg width={S(p)} height={S(p)} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 1.5H4a1 1 0 00-1 1v11a1 1 0 001 1h8a1 1 0 001-1V5.5L9 1.5z" />
+    <path d="M9 1.5v4h4" />
+  </svg>
+);
+
+export const IconOpen = (p: IconProps) => (
+  <svg width={S(p)} height={S(p)} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M2 4.5a1 1 0 011-1h3l1.5 2H13a1 1 0 011 1v1" />
+    <path d="M2 4.5V12a1 1 0 001 1h9.2a1 1 0 00.97-.76L14.5 8h-11l-1 4" />
+  </svg>
+);
+
+export const IconSave = (p: IconProps) => (
+  <svg width={S(p)} height={S(p)} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M2.5 3.5a1 1 0 011-1h7.6l2.4 2.4v7.6a1 1 0 01-1 1h-9a1 1 0 01-1-1v-9z" />
+    <path d="M5 2.5V6h5.5V2.5" />
+    <rect x="5" y="9" width="6" height="4.5" />
+  </svg>
+);
+
+export const IconExport = (p: IconProps) => (
+  <svg width={S(p)} height={S(p)} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M8 10V2M5 5l3-3 3 3" />
+    <path d="M2.5 9v3.5a1 1 0 001 1h9a1 1 0 001-1V9" />
+  </svg>
+);
+
 export const IconLogo = (p: IconProps) => (
   <svg width={S(p)} height={S(p)} viewBox="0 0 32 32" fill="none">
     <rect x="3" y="3" width="26" height="26" rx="7" stroke="currentColor" strokeWidth="2.2" />

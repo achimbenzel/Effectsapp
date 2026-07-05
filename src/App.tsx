@@ -1,8 +1,11 @@
 import { useEffect } from 'react';
 import { TopBar } from './components/TopBar';
+import { CanvasToolbar } from './components/CanvasToolbar';
 import { Viewport } from './components/Viewport';
 import { Sidebar } from './components/Sidebar';
 import { useStore } from './state/store';
+import { useGeneratedSvg } from './hooks/useGeneratedSvg';
+import { saveProject } from './state/project';
 
 /** Global keyboard shortcuts. */
 function useShortcuts() {
@@ -24,6 +27,12 @@ function useShortcuts() {
         s.redo();
         return;
       }
+      if (mod && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        saveProject();
+        s.showToast('Project saved');
+        return;
+      }
       if (mod) return;
 
       switch (e.key.toLowerCase()) {
@@ -35,24 +44,17 @@ function useShortcuts() {
           s.setTool('erase');
           s.setViewMode('draw');
           break;
-        case '1':
-        case '2':
-        case '3':
-        case '4':
-          s.setZone(parseInt(e.key, 10) as 1 | 2 | 3 | 4);
-          s.setViewMode('draw');
-          break;
         case '[':
           s.setBrushSize(Math.max(1, s.brushSize - 1));
           break;
         case ']':
-          s.setBrushSize(Math.min(8, s.brushSize + 1));
+          s.setBrushSize(Math.min(16, s.brushSize + 1));
           break;
         case 'r':
           s.reroll();
           break;
         case 'v':
-          s.setViewMode(s.viewMode === 'draw' ? 'result' : 'draw');
+          s.setViewMode(s.viewMode === 'draw' ? 'preview' : 'draw');
           break;
         case 'f':
           window.dispatchEvent(new Event('gf:fit'));
@@ -67,12 +69,16 @@ function useShortcuts() {
 export default function App() {
   useShortcuts();
   const toast = useStore((s) => s.toast);
+  const generated = useGeneratedSvg();
 
   return (
     <div className="app">
       <TopBar />
       <div className="app-main">
-        <Viewport />
+        <div className="canvas-col">
+          <CanvasToolbar busy={generated.busy} />
+          <Viewport generated={generated} />
+        </div>
         <Sidebar />
       </div>
       {toast ? <div className={`toast${toast.error ? ' error' : ''}`}>{toast.text}</div> : null}

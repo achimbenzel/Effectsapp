@@ -1,20 +1,21 @@
 /** Circuit generator — evolution of "Circuit Sketcher REV-D".
  *
  *  The proven core is kept: 45°-constrained stochastic trace growth inside
- *  the painted mask, with occupancy so traces never cross. Improvements:
+ *  the painted mask, with occupancy so traces never cross. Design changes:
  *
- *   - clearance: committed traces optionally dilate into a block field so
- *     parallel runs keep a consistent one-cell air gap
- *   - branching: new traces can fork off existing ones with a configurable
- *     probability, giving natural bus-like structures
- *   - tunable straightness, length and density instead of fixed constants
- *   - trace-length-sorted commitment: longer paths are grown first, which
- *     reduces stubby fragments and visual noise
- *
- *  Mask zones: 1/4 = copper (routable), 2 = IC packages, 3 = discrete parts. */
+ *   - the router works on its own grid, downsampled from the document mask;
+ *     the "trace scale" control replaces the old grid-resolution setting
+ *   - ICs and discrete parts are placed procedurally in roomy interior
+ *     regions (the manual "draw chip / parts" pens are gone)
+ *   - clearance: committed traces dilate into a block field so parallel
+ *     runs keep a consistent air gap
+ *   - branching: traces fork bus-like children with a configurable chance
+ *   - three-colour theme: primary = copper, secondary = pads/labels,
+ *     chip bodies derived from the background */
 
 import type { GeneratorDef, GeneratorContext, ParamValues, SvgDoc } from '../types';
-import { lighten } from '../core/color';
+import { lighten, darken, luminance } from '../core/color';
+import { distanceField, downsampleMask } from '../core/fields';
 
 const DIRS: ReadonlyArray<readonly [number, number]> = [
   [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1],
@@ -26,16 +27,83 @@ interface Path {
   prepend?: [number, number];
 }
 
-function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
-  const { mask, G, S, size, rnd, palette } = ctx;
-  const f = (n: number) => (Math.round(n * 100) / 100).toString();
-  const c = (v: number) => v * S + S / 2;
+const SCALE_TO_G: Record<string, number> = { fine: 128, medium: 96, coarse: 64 };
 
+/** Carve procedural component zones (2 = chip, 3 = parts) into the route
+ *  mask, using the distance field to find regions with enough room. */
+function placeComponents(
+  route: Uint8Array,
+  G: number,
+  chips: number,
+  parts: number,
+  rnd: () => number,
+): void {
+  if (chips <= 0 && parts <= 0) return;
+  const dist = distanceField(route, G);
+
+  const candidates: number[] = [];
+  for (let i = 0; i < route.length; i++) if (dist[i] >= 4.5) candidates.push(i);
+
+  const clearAround = (cx: number, cy: number, r: number): boolean => {
+    for (let y = cy - r; y <= cy + r; y++)
+      for (let x = cx - r; x <= cx + r; x++) {
+        if (x < 0 || y < 0 || x >= G || y >= G) return false;
+        if (route[y * G + x] !== 1) return false;
+      }
+    return true;
+  };
+
+  let placedChips = 0;
+  for (let a = 0; a < chips * 40 && placedChips < chips && candidates.length; a++) {
+    const ci = candidates[(rnd() * candidates.length) | 0];
+    const cx = ci % G;
+    const cy = (ci / G) | 0;
+    const w = 2 + ((rnd() * 2) | 0); // half-extents 2..3 → 5..7 cells
+    const h = 2 + ((rnd() * 2) | 0);
+    if (!clearAround(cx, cy, Math.max(w, h) + 1)) continue;
+    for (let y = cy - h; y <= cy + h; y++)
+      for (let x = cx - w; x <= cx + w; x++) route[y * G + x] = 2;
+    placedChips++;
+  }
+
+  // parts want a 3×3 block plus lead room
+  const partCandidates: number[] = [];
+  for (let i = 0; i < route.length; i++) if (route[i] === 1 && dist[i] >= 2.5) partCandidates.push(i);
+  let placedParts = 0;
+  for (let a = 0; a < parts * 30 && placedParts < parts && partCandidates.length; a++) {
+    const ci = partCandidates[(rnd() * partCandidates.length) | 0];
+    const cx = ci % G;
+    const cy = (ci / G) | 0;
+    if (!clearAround(cx, cy, 2)) continue;
+    for (let y = cy - 1; y <= cy + 1; y++)
+      for (let x = cx - 1; x <= cx + 1; x++) route[y * G + x] = 3;
+    placedParts++;
+  }
+}
+
+function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
+  const { mask: srcMask, G: srcG, size, rnd, palette } = ctx;
+  const f = (n: number) => (Math.round(n * 100) / 100).toString();
+
+  // ----- route grid -----
+  const G = SCALE_TO_G[p.traceScale as string] ?? 96;
+  const S = size / G;
+  const c = (v: number) => v * S + S / 2;
+  const mask = downsampleMask(srcMask, srcG, G);
+  placeComponents(
+    mask,
+    G,
+    Math.round(p.chips as number),
+    Math.round(p.parts as number),
+    rnd,
+  );
+
+  const chipBody = luminance(palette.bg) > 128 ? darken(palette.bg, 0.78) : lighten(palette.bg, 0.07);
   const COL = {
-    trace: palette.zones[0],
-    pad: palette.accent,
-    chip: palette.chip,
-    text: palette.text,
+    trace: palette.primary,
+    pad: palette.secondary,
+    chip: chipBody,
+    text: palette.secondary,
   };
 
   const straightness = (p.straightness as number) / 100;
@@ -49,14 +117,11 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
   const showFrame = p.frame as boolean;
   const strokeW = S * 0.34 * ((p.strokeWidth as number) / 100);
 
-  const routable = (x: number, y: number) => {
-    if (x < 0 || y < 0 || x >= G || y >= G) return false;
-    const v = mask[y * G + x];
-    return v === 1 || v === 4;
-  };
+  const routable = (x: number, y: number) =>
+    x >= 0 && y >= 0 && x < G && y < G && mask[y * G + x] === 1;
 
   let area = 0;
-  for (let y = 0; y < G; y++) for (let x = 0; x < G; x++) if (routable(x, y)) area++;
+  for (let i = 0; i < mask.length; i++) if (mask[i] === 1) area++;
 
   const occ = new Uint8Array(G * G); // cells claimed by traces
   const block = new Uint8Array(G * G); // clearance halo of committed traces
@@ -245,7 +310,7 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
     }
   }
 
-  // ----- free traces: gather candidates, keep the longest ones first -----
+  // ----- free traces -----
   const cells: [number, number][] = [];
   for (let y = 0; y < G; y++) for (let x = 0; x < G; x++) if (routable(x, y)) cells.push([x, y]);
   const attempts = Math.min(2200, Math.round(area * 3 * densityMul));
@@ -397,12 +462,12 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
 
   const W = size;
   const fid = (x: number, y: number) =>
-    `<circle cx="${x}" cy="${y}" r="5" fill="none" stroke="${COL.pad}" stroke-width="1.2" opacity="0.5"/>` +
-    `<circle cx="${x}" cy="${y}" r="1.6" fill="${COL.pad}" opacity="0.5"/>`;
+    `<circle cx="${x}" cy="${y}" r="8" fill="none" stroke="${COL.pad}" stroke-width="1.6" opacity="0.5"/>` +
+    `<circle cx="${x}" cy="${y}" r="2.4" fill="${COL.pad}" opacity="0.5"/>`;
   const decoration = showFrame
-    ? `<rect x="6" y="6" width="${W - 12}" height="${W - 12}" fill="none" stroke="${COL.pad}" stroke-width="1" opacity="0.28"/>` +
-      `${fid(16, 16)}${fid(W - 16, 16)}${fid(16, W - 16)}${fid(W - 16, W - 16)}` +
-      `<text x="${W - 14}" y="${W - 13}" text-anchor="end" font-family="monospace" font-size="9" fill="${COL.pad}" opacity="0.5">GRIDFORGE REV-E</text>`
+    ? `<rect x="10" y="10" width="${W - 20}" height="${W - 20}" fill="none" stroke="${COL.pad}" stroke-width="1.4" opacity="0.28"/>` +
+      `${fid(28, 28)}${fid(W - 28, 28)}${fid(28, W - 28)}${fid(W - 28, W - 28)}` +
+      `<text x="${W - 24}" y="${W - 22}" text-anchor="end" font-family="monospace" font-size="14" fill="${COL.pad}" opacity="0.5">GRIDFORGE REV-E</text>`
     : '';
 
   const css = `
@@ -431,12 +496,14 @@ export const circuitGenerator: GeneratorDef = {
   id: 'circuit',
   name: 'Circuit',
   tagline: 'PCB trace growth',
-  zoneLabels: ['Traces', 'Chips', 'Parts', 'Copper alt'],
   defaults: {
+    traceScale: 'medium',
     density: 100,
     traceLength: 22,
     straightness: 62,
     branching: 25,
+    chips: 2,
+    parts: 6,
     clearance: false,
     strokeWidth: 100,
     padStyle: 'rings',
@@ -445,10 +512,22 @@ export const circuitGenerator: GeneratorDef = {
     frame: true,
   },
   controls: [
+    {
+      kind: 'select',
+      key: 'traceScale',
+      label: 'Trace scale',
+      options: [
+        { value: 'fine', label: 'Fine' },
+        { value: 'medium', label: 'Medium' },
+        { value: 'coarse', label: 'Coarse' },
+      ],
+    },
     { kind: 'slider', key: 'density', label: 'Density', min: 20, max: 200, unit: '%' },
     { kind: 'slider', key: 'traceLength', label: 'Trace length', min: 6, max: 60 },
     { kind: 'slider', key: 'straightness', label: 'Straightness', min: 20, max: 95, unit: '%' },
     { kind: 'slider', key: 'branching', label: 'Branching', min: 0, max: 100, unit: '%' },
+    { kind: 'slider', key: 'chips', label: 'IC chips', min: 0, max: 8 },
+    { kind: 'slider', key: 'parts', label: 'Components', min: 0, max: 20 },
     { kind: 'slider', key: 'strokeWidth', label: 'Stroke width', min: 40, max: 200, unit: '%' },
     {
       kind: 'select',

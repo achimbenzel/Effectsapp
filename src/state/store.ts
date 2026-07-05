@@ -2,17 +2,16 @@
  *
  *  The mask lives here as a mutable Uint8Array; drawing mutates it in place
  *  for performance and bumps `maskRev` to notify subscribers. Undo/redo
- *  snapshots are taken per completed stroke / structural change. */
+ *  snapshots are taken per completed stroke / structural change.
+ *
+ *  The document works on a fixed high-resolution 256×256 ink mask — fine
+ *  enough for detailed imports; generators choose their own working
+ *  resolution from it (e.g. the circuit router downsamples). */
 
 import { create } from 'zustand';
-import type { ParamValues, Palette, Zone } from '../types';
-import { GENERATORS, getGenerator } from '../generators/registry';
-import {
-  createMask,
-  resampleMask,
-  fillEmpty,
-  type MirrorMode,
-} from '../mask/maskOps';
+import type { ParamValues, Palette } from '../types';
+import { GENERATORS } from '../generators/registry';
+import { createMask, fillEmpty, type MirrorMode } from '../mask/maskOps';
 import {
   DEFAULT_PREPROCESS,
   imageToMask,
@@ -22,97 +21,48 @@ import {
 import { randomSeed } from '../core/rng';
 
 export type ToolId = 'brush' | 'erase';
-export type ViewMode = 'draw' | 'result';
+export type ViewMode = 'draw' | 'preview';
+
+/** Fixed mask resolution. */
+export const MASK_G = 256;
 
 interface Snapshot {
-  G: number;
   mask: Uint8Array;
 }
 
-export interface PalettePreset {
+export interface ThemePreset {
   id: string;
   name: string;
   palette: Palette;
 }
 
-export const PALETTE_PRESETS: PalettePreset[] = [
-  {
-    id: 'classic',
-    name: 'Classic copper',
-    palette: {
-      zones: ['#d08a3c', '#6fc2ff', '#ff8da1', '#84e0a8'],
-      bg: '#0b2e1f',
-      accent: '#e8c06a',
-      chip: '#16181d',
-      text: '#e8c06a',
-    },
-  },
-  {
-    id: 'midnight',
-    name: 'Midnight',
-    palette: {
-      zones: ['#8fa8c4', '#5fc6e8', '#dde9f5', '#7fd4ff'],
-      bg: '#0d1b2e',
-      accent: '#dde9f5',
-      chip: '#10141b',
-      text: '#dde9f5',
-    },
-  },
-  {
-    id: 'neon',
-    name: 'Neon',
-    palette: {
-      zones: ['#16e0a0', '#6fc2ff', '#ff8da1', '#f0c05a'],
-      bg: '#08080c',
-      accent: '#b9ffe7',
-      chip: '#15151a',
-      text: '#b9ffe7',
-    },
-  },
-  {
-    id: 'silkscreen',
-    name: 'Silkscreen',
-    palette: {
-      zones: ['#33363b', '#4a5160', '#1c1f26', '#6b7280'],
-      bg: '#f1ede4',
-      accent: '#15171a',
-      chip: '#23262c',
-      text: '#f1ede4',
-    },
-  },
-  {
-    id: 'candy',
-    name: 'Candy',
-    palette: {
-      zones: ['#ff8da1', '#6fc2ff', '#84e0a8', '#f0c05a'],
-      bg: '#161226',
-      accent: '#ffd98a',
-      chip: '#1d1930',
-      text: '#ffd98a',
-    },
-  },
-  {
-    id: 'aqua',
-    name: 'Frutiger aqua',
-    palette: {
-      zones: ['#5fc6e8', '#54d6cf', '#5aa6e6', '#7fd4ff'],
-      bg: '#071318',
-      accent: '#93e6fb',
-      chip: '#0f242d',
-      text: '#93e6fb',
-    },
-  },
+/** Professionally curated themes: background / geometry / accent. */
+export const THEME_PRESETS: ThemePreset[] = [
+  { id: 'mono', name: 'Monochrome', palette: { bg: '#0b0b0d', primary: '#f4f5f7', secondary: '#8f97a3' } },
+  { id: 'technical', name: 'Technical Green', palette: { bg: '#0b2e1f', primary: '#5fd39a', secondary: '#c9f3de' } },
+  { id: 'blueprint', name: 'Blueprint', palette: { bg: '#0d2e5c', primary: '#dce9f8', secondary: '#7fb0e8' } },
+  { id: 'amber', name: 'Amber Terminal', palette: { bg: '#120c02', primary: '#ffb02e', secondary: '#ffd98a' } },
+  { id: 'cyber', name: 'Cyber Blue', palette: { bg: '#060913', primary: '#5fc6e8', secondary: '#8fe3ff' } },
+  { id: 'copper', name: 'Copper PCB', palette: { bg: '#0b2e1f', primary: '#d08a3c', secondary: '#e8c06a' } },
+  { id: 'paper', name: 'Black on White', palette: { bg: '#f4f1ea', primary: '#1c1e22', secondary: '#5a6170' } },
 ];
+
+export interface ProjectData {
+  mask: Uint8Array;
+  generatorId: string;
+  params: Record<string, ParamValues>;
+  palette: Palette;
+  bgOn: boolean;
+  seed: number;
+}
 
 interface AppState {
   // ----- document -----
-  G: number;
   mask: Uint8Array;
   maskRev: number;
 
   // ----- drawing -----
   tool: ToolId;
-  zone: Zone;
   brushSize: number;
   mirror: MirrorMode;
 
@@ -137,22 +87,21 @@ interface AppState {
 
   // ----- actions -----
   setTool(t: ToolId): void;
-  setZone(z: Zone): void;
   setBrushSize(n: number): void;
   setMirror(m: MirrorMode): void;
-  setGrid(G: number): void;
   bumpMask(): void;
   pushUndo(): void;
   undo(): void;
   redo(): void;
   clearMask(): void;
   fillAll(): void;
+  newDocument(): void;
+  loadProject(data: ProjectData): void;
   setGenerator(id: string): void;
   setParam(key: string, value: ParamValues[string]): void;
   reroll(): void;
   setPalette(p: Partial<Palette>): void;
-  setZoneColor(i: number, hex: string): void;
-  applyPreset(preset: PalettePreset): void;
+  applyPreset(preset: ThemePreset): void;
   setBgOn(on: boolean): void;
   setImported(img: ImportedImage | null): void;
   setPreprocess(p: Partial<PreprocessParams>): void;
@@ -170,13 +119,11 @@ const defaultParams = (): Record<string, ParamValues> => {
 };
 
 export const useStore = create<AppState>((set, get) => ({
-  G: 64,
-  mask: createMask(64),
+  mask: createMask(MASK_G),
   maskRev: 0,
 
   tool: 'brush',
-  zone: 1,
-  brushSize: 2,
+  brushSize: 6,
   mirror: 'off',
 
   undoStack: [],
@@ -185,7 +132,7 @@ export const useStore = create<AppState>((set, get) => ({
   generatorId: 'circuit',
   params: defaultParams(),
   seed: randomSeed(),
-  palette: PALETTE_PRESETS[0].palette,
+  palette: THEME_PRESETS[0].palette,
   bgOn: true,
 
   imported: null,
@@ -195,47 +142,37 @@ export const useStore = create<AppState>((set, get) => ({
   toast: null,
 
   setTool: (tool) => set({ tool }),
-  setZone: (zone) => set({ zone, tool: 'brush' }),
   setBrushSize: (brushSize) => set({ brushSize }),
   setMirror: (mirror) => set({ mirror }),
-
-  setGrid: (newG) => {
-    const { G, mask } = get();
-    if (newG === G) return;
-    get().pushUndo();
-    set({ G: newG, mask: resampleMask(mask, G, newG), maskRev: get().maskRev + 1 });
-  },
 
   bumpMask: () => set((s) => ({ maskRev: s.maskRev + 1 })),
 
   pushUndo: () => {
-    const { G, mask, undoStack } = get();
-    const next = [...undoStack, { G, mask: new Uint8Array(mask) }];
+    const { mask, undoStack } = get();
+    const next = [...undoStack, { mask: new Uint8Array(mask) }];
     if (next.length > MAX_UNDO) next.shift();
     set({ undoStack: next, redoStack: [] });
   },
 
   undo: () => {
-    const { undoStack, redoStack, G, mask } = get();
+    const { undoStack, redoStack, mask } = get();
     if (!undoStack.length) return;
     const snap = undoStack[undoStack.length - 1];
     set({
       undoStack: undoStack.slice(0, -1),
-      redoStack: [...redoStack, { G, mask: new Uint8Array(mask) }],
-      G: snap.G,
+      redoStack: [...redoStack, { mask: new Uint8Array(mask) }],
       mask: new Uint8Array(snap.mask),
       maskRev: get().maskRev + 1,
     });
   },
 
   redo: () => {
-    const { undoStack, redoStack, G, mask } = get();
+    const { undoStack, redoStack, mask } = get();
     if (!redoStack.length) return;
     const snap = redoStack[redoStack.length - 1];
     set({
       redoStack: redoStack.slice(0, -1),
-      undoStack: [...undoStack, { G, mask: new Uint8Array(mask) }],
-      G: snap.G,
+      undoStack: [...undoStack, { mask: new Uint8Array(mask) }],
       mask: new Uint8Array(snap.mask),
       maskRev: get().maskRev + 1,
     });
@@ -243,7 +180,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   clearMask: () => {
     get().pushUndo();
-    set({ mask: createMask(get().G), maskRev: get().maskRev + 1 });
+    set({ mask: createMask(MASK_G), maskRev: get().maskRev + 1 });
   },
 
   fillAll: () => {
@@ -252,6 +189,34 @@ export const useStore = create<AppState>((set, get) => ({
     fillEmpty(mask);
     set({ mask, maskRev: get().maskRev + 1 });
   },
+
+  newDocument: () =>
+    set({
+      mask: createMask(MASK_G),
+      maskRev: get().maskRev + 1,
+      undoStack: [],
+      redoStack: [],
+      params: defaultParams(),
+      seed: randomSeed(),
+      imported: null,
+      preprocess: { ...DEFAULT_PREPROCESS },
+      viewMode: 'draw',
+    }),
+
+  loadProject: (data) =>
+    set({
+      mask: data.mask,
+      maskRev: get().maskRev + 1,
+      undoStack: [],
+      redoStack: [],
+      generatorId: data.generatorId,
+      params: data.params,
+      palette: data.palette,
+      bgOn: data.bgOn,
+      seed: data.seed,
+      imported: null,
+      viewMode: 'preview',
+    }),
 
   setGenerator: (generatorId) => set({ generatorId }),
 
@@ -268,12 +233,6 @@ export const useStore = create<AppState>((set, get) => ({
   reroll: () => set({ seed: randomSeed() }),
 
   setPalette: (p) => set((s) => ({ palette: { ...s.palette, ...p } })),
-  setZoneColor: (i, hex) =>
-    set((s) => {
-      const zones = [...s.palette.zones] as Palette['zones'];
-      zones[i] = hex;
-      return { palette: { ...s.palette, zones } };
-    }),
   applyPreset: (preset) => set({ palette: { ...preset.palette } }),
   setBgOn: (bgOn) => set({ bgOn }),
 
@@ -281,11 +240,11 @@ export const useStore = create<AppState>((set, get) => ({
   setPreprocess: (p) => set((s) => ({ preprocess: { ...s.preprocess, ...p } })),
 
   applyImportToMask: (pushUndo = true) => {
-    const { imported, G, preprocess } = get();
+    const { imported, preprocess } = get();
     if (!imported) return;
     if (pushUndo) get().pushUndo();
     set({
-      mask: imageToMask(imported, G, preprocess),
+      mask: imageToMask(imported, MASK_G, preprocess),
       maskRev: get().maskRev + 1,
     });
   },
@@ -302,5 +261,5 @@ export const useStore = create<AppState>((set, get) => ({
 
 export function useActiveGenerator() {
   const generatorId = useStore((s) => s.generatorId);
-  return getGenerator(generatorId);
+  return GENERATORS.find((g) => g.id === generatorId) ?? GENERATORS[0];
 }

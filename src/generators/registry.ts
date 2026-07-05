@@ -5,8 +5,15 @@
 import type { GeneratorDef } from '../types';
 import { circuitGenerator } from './circuit';
 import { marksGenerator } from './marks';
+import { contoursGenerator } from './contours';
+import { hatchingGenerator } from './hatching';
 
-export const GENERATORS: GeneratorDef[] = [circuitGenerator, marksGenerator];
+export const GENERATORS: GeneratorDef[] = [
+  circuitGenerator,
+  marksGenerator,
+  contoursGenerator,
+  hatchingGenerator,
+];
 
 export function getGenerator(id: string): GeneratorDef {
   return GENERATORS.find((g) => g.id === id) ?? GENERATORS[0];

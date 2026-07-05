@@ -127,14 +127,13 @@ export function despeckle(mask: Uint8Array, G: number, minNeighbors = 1): Uint8A
 export function maskToImageData(
   mask: Uint8Array,
   G: number,
-  zoneColors: [number, number, number][],
+  ink: [number, number, number],
 ): ImageData {
   const img = new ImageData(G, G);
   const d = img.data;
+  const [r, g, b] = ink;
   for (let i = 0; i < mask.length; i++) {
-    const v = mask[i];
-    if (!v) continue;
-    const [r, g, b] = zoneColors[(v - 1) % zoneColors.length];
+    if (!mask[i]) continue;
     const o = i * 4;
     d[o] = r;
     d[o + 1] = g;

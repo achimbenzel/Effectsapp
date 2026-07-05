@@ -1,9 +1,10 @@
-/** Right-hand settings sidebar. Generator parameters are rendered from the
- *  active generator's declarative control specs, so new generators show up
- *  here with zero UI work. */
+/** Right-hand settings sidebar, ordered as a workflow:
+ *  Import → Generator → Settings → Theme → Export.
+ *  Generator parameters render from the active generator's declarative
+ *  control specs, so new generators need zero sidebar work. */
 
-import { useRef } from 'react';
-import { useStore, useActiveGenerator, PALETTE_PRESETS } from '../state/store';
+import { useRef, useState } from 'react';
+import { useStore, useActiveGenerator, THEME_PRESETS } from '../state/store';
 import { GENERATORS } from '../generators/registry';
 import { decodeImageFile } from '../raster/preprocess';
 import { generateCurrent } from '../hooks/useGeneratedSvg';
@@ -12,11 +13,9 @@ import { exportPng } from '../exporters/png';
 import { Slider } from './controls/Slider';
 import { Select } from './controls/Select';
 import { Toggle } from './controls/Toggle';
-import { Seg } from './controls/Seg';
 import { ColorField } from './controls/ColorField';
-import { IconDice } from './icons';
+import { IconDice, IconImport } from './icons';
 import type { ControlSpec } from '../types';
-import { useState } from 'react';
 
 function GeneratorControls() {
   const gen = useActiveGenerator();
@@ -68,18 +67,8 @@ export function Sidebar() {
 
   const generatorId = useStore((s) => s.generatorId);
   const setGenerator = useStore((s) => s.setGenerator);
-  const gen = useActiveGenerator();
   const seed = useStore((s) => s.seed);
   const reroll = useStore((s) => s.reroll);
-
-  const brushSize = useStore((s) => s.brushSize);
-  const setBrushSize = useStore((s) => s.setBrushSize);
-  const mirror = useStore((s) => s.mirror);
-  const setMirror = useStore((s) => s.setMirror);
-  const G = useStore((s) => s.G);
-  const setGrid = useStore((s) => s.setGrid);
-  const fillAll = useStore((s) => s.fillAll);
-  const clearMask = useStore((s) => s.clearMask);
 
   const imported = useStore((s) => s.imported);
   const preprocess = useStore((s) => s.preprocess);
@@ -89,7 +78,6 @@ export function Sidebar() {
 
   const palette = useStore((s) => s.palette);
   const setPalette = useStore((s) => s.setPalette);
-  const setZoneColor = useStore((s) => s.setZoneColor);
   const applyPreset = useStore((s) => s.applyPreset);
   const bgOn = useStore((s) => s.bgOn);
   const setBgOn = useStore((s) => s.setBgOn);
@@ -111,7 +99,7 @@ export function Sidebar() {
       const img = await decodeImageFile(file);
       setImported(img);
       applyImportToMask(true);
-      setViewMode('draw');
+      setViewMode('preview');
       showToast(`Imported ${file.name}`);
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Import failed', true);
@@ -140,73 +128,7 @@ export function Sidebar() {
 
   return (
     <aside className="sidebar">
-      {/* ---------- GENERATOR ---------- */}
-      <section className="side-section">
-        <h2 className="side-heading">
-          <span className="heading-dot" />
-          Generator
-        </h2>
-        <div className="side-rows">
-          <Select
-            value={generatorId}
-            options={GENERATORS.map((g) => ({ value: g.id, label: `${g.name} — ${g.tagline}` }))}
-            onChange={setGenerator}
-          />
-          <div className="inline-field">
-            <span className="side-note">Seed {seed.toString(16).padStart(8, '0')}</span>
-            <button className="btn btn--sm btn--teal" onClick={reroll}>
-              <IconDice size={12} />
-              Re-roll
-            </button>
-          </div>
-          <GeneratorControls />
-        </div>
-      </section>
-
-      {/* ---------- DRAWING ---------- */}
-      <section className="side-section">
-        <h2 className="side-heading">
-          <span className="heading-dot heading-dot--teal" />
-          Drawing
-        </h2>
-        <div className="side-rows">
-          <Slider label="Brush size" min={1} max={8} value={brushSize} onChange={setBrushSize} />
-          <Seg
-            label="Mirror"
-            value={mirror}
-            options={[
-              { value: 'off', label: 'Off' },
-              { value: 'h', label: 'H' },
-              { value: 'v', label: 'V' },
-              { value: '4', label: '4-way' },
-            ]}
-            onChange={setMirror}
-          />
-          <Seg
-            label="Grid resolution"
-            value={String(G) as '64' | '128' | '256'}
-            options={[
-              { value: '64', label: '64' },
-              { value: '128', label: '128' },
-              { value: '256', label: '256' },
-            ]}
-            onChange={(v) => setGrid(parseInt(v, 10))}
-          />
-          <div className="export-btns">
-            <button className="btn btn--sm" onClick={fillAll}>
-              Fill all
-            </button>
-            <button className="btn btn--sm" onClick={clearMask}>
-              Clear
-            </button>
-          </div>
-          <p className="side-note">
-            Pens 1–4 paint zones: {gen.zoneLabels.join(' · ')}
-          </p>
-        </div>
-      </section>
-
-      {/* ---------- IMPORT ---------- */}
+      {/* ---------- 1 · IMPORT ---------- */}
       <section className="side-section">
         <h2 className="side-heading">
           <span className="heading-dot heading-dot--coral" />
@@ -215,6 +137,7 @@ export function Sidebar() {
         <div className="side-rows">
           <div className="import-btns">
             <button className="btn btn--sm" onClick={() => fileRef.current?.click()}>
+              <IconImport size={12} />
               {imported ? 'Replace image…' : 'Import PNG / JPG / SVG…'}
             </button>
             <input
@@ -236,6 +159,7 @@ export function Sidebar() {
                 <br />
                 {imported.width} × {imported.height}px
               </p>
+              <p className="side-note">Image processing</p>
               <Slider
                 label="Threshold"
                 min={0}
@@ -288,60 +212,105 @@ export function Sidebar() {
               />
             </>
           ) : (
-            <p className="side-note">Drop a file anywhere on the canvas, or use the button above. Flat backgrounds are removed automatically.</p>
+            <p className="side-note">
+              Drop a file anywhere on the canvas, or use the button above. Flat backgrounds are
+              removed automatically.
+            </p>
           )}
         </div>
       </section>
 
-      {/* ---------- COLORS ---------- */}
+      {/* ---------- 2 · GENERATOR ---------- */}
       <section className="side-section">
         <h2 className="side-heading">
           <span className="heading-dot" />
-          Colors
+          Generator
         </h2>
         <div className="side-rows">
-          {gen.zoneLabels.map((label, i) => (
-            <ColorField
-              key={i}
-              label={label}
-              value={palette.zones[i]}
-              onChange={(hex) => setZoneColor(i, hex)}
-            />
-          ))}
-          <ColorField
-            label="Accent (pads)"
-            value={palette.accent}
-            onChange={(hex) => setPalette({ accent: hex })}
+          <Select
+            value={generatorId}
+            options={GENERATORS.map((g) => ({ value: g.id, label: `${g.name} — ${g.tagline}` }))}
+            onChange={(id) => {
+              setGenerator(id);
+              setViewMode('preview');
+            }}
           />
+          <div className="inline-field">
+            <span className="side-note">Seed {seed.toString(16).padStart(8, '0')}</span>
+            <button
+              className="btn btn--sm"
+              onClick={() => {
+                reroll();
+                setViewMode('preview');
+              }}
+              title="New random seed (R)"
+            >
+              <IconDice size={12} />
+              Re-roll
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* ---------- 3 · SETTINGS ---------- */}
+      <section className="side-section">
+        <h2 className="side-heading">
+          <span className="heading-dot heading-dot--teal" />
+          Settings
+        </h2>
+        <div className="side-rows">
+          <GeneratorControls />
+        </div>
+      </section>
+
+      {/* ---------- 4 · THEME ---------- */}
+      <section className="side-section">
+        <h2 className="side-heading">
+          <span className="heading-dot" />
+          Theme
+        </h2>
+        <div className="side-rows">
+          <div className="theme-list">
+            {THEME_PRESETS.map((t) => {
+              const active =
+                t.palette.bg === palette.bg &&
+                t.palette.primary === palette.primary &&
+                t.palette.secondary === palette.secondary;
+              return (
+                <button
+                  key={t.id}
+                  className={`theme-card${active ? ' selected' : ''}`}
+                  onClick={() => applyPreset(t)}
+                >
+                  <span className="theme-swatches" style={{ background: t.palette.bg }}>
+                    <i style={{ background: t.palette.primary }} />
+                    <i style={{ background: t.palette.secondary }} />
+                  </span>
+                  <span className="theme-name">{t.name}</span>
+                </button>
+              );
+            })}
+          </div>
           <ColorField
             label="Background"
             value={palette.bg}
             onChange={(hex) => setPalette({ bg: hex })}
           />
+          <ColorField
+            label="Primary"
+            value={palette.primary}
+            onChange={(hex) => setPalette({ primary: hex })}
+          />
+          <ColorField
+            label="Secondary"
+            value={palette.secondary}
+            onChange={(hex) => setPalette({ secondary: hex })}
+          />
           <Toggle label="Show background" checked={bgOn} onChange={setBgOn} />
-          <div className="control">
-            <div className="control-head">
-              <span className="control-label">Presets</span>
-            </div>
-            <div className="colorchip-row">
-              {PALETTE_PRESETS.map((p) => (
-                <button
-                  key={p.id}
-                  className="colorchip-preset"
-                  title={p.name}
-                  onClick={() => applyPreset(p)}
-                >
-                  {p.palette.zones.map((z, i) => (
-                    <span key={i} style={{ background: z }} />
-                  ))}
-                </button>
-              ))}
-            </div>
-          </div>
         </div>
       </section>
 
-      {/* ---------- EXPORT ---------- */}
+      {/* ---------- 5 · EXPORT ---------- */}
       <section className="side-section">
         <h2 className="side-heading">
           <span className="heading-dot heading-dot--teal" />
@@ -359,7 +328,7 @@ export function Sidebar() {
             ]}
             onChange={setExportSize}
           />
-          <Slider label="Padding" min={0} max={64} value={exportPad} onChange={setExportPad} />
+          <Slider label="Padding" min={0} max={128} value={exportPad} onChange={setExportPad} />
           <Toggle
             label="Transparent background"
             checked={exportTransparent}

@@ -1,29 +1,57 @@
-/** Application header: brand, history, mask actions, seed re-roll. */
+/** Application header: brand, file actions (new / open / save / export)
+ *  and history. Tool-specific controls live in the canvas toolbar. */
 
+import { useRef } from 'react';
 import { useStore } from '../state/store';
+import { saveProject, openProject } from '../state/project';
+import { generateCurrent } from '../hooks/useGeneratedSvg';
+import { downloadSvg } from '../exporters/svg';
 import {
-  IconBrush,
-  IconEraser,
   IconUndo,
   IconRedo,
-  IconTrash,
-  IconFill,
-  IconDice,
-  IconFit,
+  IconNew,
+  IconOpen,
+  IconSave,
+  IconExport,
   IconLogo,
 } from './icons';
 
 export function TopBar() {
-  const tool = useStore((s) => s.tool);
-  const setTool = useStore((s) => s.setTool);
+  const openRef = useRef<HTMLInputElement>(null);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const canUndo = useStore((s) => s.undoStack.length > 0);
   const canRedo = useStore((s) => s.redoStack.length > 0);
-  const clearMask = useStore((s) => s.clearMask);
-  const fillAll = useStore((s) => s.fillAll);
-  const reroll = useStore((s) => s.reroll);
-  const setViewMode = useStore((s) => s.setViewMode);
+  const newDocument = useStore((s) => s.newDocument);
+  const showToast = useStore((s) => s.showToast);
+
+  const onNew = () => {
+    if (useStore.getState().undoStack.length > 0 || !useStore.getState().mask.every((v) => !v)) {
+      if (!window.confirm('Start a new file? Unsaved changes will be lost.')) return;
+    }
+    newDocument();
+    showToast('New file');
+  };
+
+  const onOpen = async (file: File) => {
+    try {
+      await openProject(file);
+      showToast(`Opened ${file.name}`);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not open file', true);
+    }
+  };
+
+  const onExport = () => {
+    const s = useStore.getState();
+    const out = generateCurrent();
+    if (!out) {
+      showToast('Nothing to export yet — draw or import first', true);
+      return;
+    }
+    downloadSvg(out.svg, `gridforge-${s.generatorId}-${s.seed.toString(16)}.svg`);
+    showToast('SVG exported');
+  };
 
   return (
     <header className="topbar">
@@ -38,26 +66,26 @@ export function TopBar() {
       <span className="topbar-sep" />
 
       <div className="topbar-group">
-        <button
-          className={`iconbtn${tool === 'brush' ? ' active' : ''}`}
-          title="Brush (B)"
-          onClick={() => {
-            setTool('brush');
-            setViewMode('draw');
-          }}
-        >
-          <IconBrush />
+        <button className="iconbtn" title="New file" onClick={onNew}>
+          <IconNew />
         </button>
-        <button
-          className={`iconbtn${tool === 'erase' ? ' active' : ''}`}
-          title="Eraser (E)"
-          onClick={() => {
-            setTool('erase');
-            setViewMode('draw');
-          }}
-        >
-          <IconEraser />
+        <button className="iconbtn" title="Open project… (Ctrl+O)" onClick={() => openRef.current?.click()}>
+          <IconOpen />
         </button>
+        <button className="iconbtn" title="Save project (Ctrl+S)" onClick={() => saveProject()}>
+          <IconSave />
+        </button>
+        <input
+          ref={openRef}
+          type="file"
+          accept=".json,application/json"
+          hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onOpen(f);
+            e.target.value = '';
+          }}
+        />
       </div>
 
       <span className="topbar-sep" />
@@ -71,29 +99,11 @@ export function TopBar() {
         </button>
       </div>
 
-      <span className="topbar-sep" />
-
-      <div className="topbar-group">
-        <button className="iconbtn" title="Fill all" onClick={fillAll}>
-          <IconFill />
-        </button>
-        <button className="iconbtn" title="Clear canvas" onClick={clearMask}>
-          <IconTrash />
-        </button>
-        <button
-          className="iconbtn"
-          title="Fit to screen (F)"
-          onClick={() => window.dispatchEvent(new Event('gf:fit'))}
-        >
-          <IconFit />
-        </button>
-      </div>
-
       <span className="topbar-spacer" />
 
-      <button className="btn btn--sm btn--teal" onClick={reroll} title="New random seed (R)">
-        <IconDice size={12} />
-        Re-roll
+      <button className="btn btn--sm btn--teal" onClick={onExport} title="Export SVG">
+        <IconExport size={12} />
+        Export
       </button>
     </header>
   );

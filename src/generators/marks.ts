@@ -1,62 +1,26 @@
-/** Mark field generator — the redesigned successor to "Cross Sketcher".
+/** Mark field generator — blue-noise / lattice mark placement.
  *
- *  Improvements over the original:
- *   - blue-noise (Poisson-disc) layout with a hard minimum-distance
- *     guarantee, alongside honest grid/hex lattices
- *   - collision-free sizing: mark radius is derived from the layout's
- *     enforced spacing, so marks never overlap (unless allowed)
- *   - edge-aware sizing: a chamfer distance transform of the mask lets
- *     marks shrink gracefully toward the silhouette boundary
- *   - deterministic seeding throughout */
+ *  Spacing is expressed in absolute document units (document = 1024 units),
+ *  so marks scale down to very fine detail independent of any grid setting.
+ *  The 256-cell ink mask preserves small image features that the marks can
+ *  follow precisely.
+ *
+ *  Quality guarantees:
+ *   - Poisson-disc layout enforces a hard minimum distance between marks
+ *   - mark radius is derived from that enforced spacing → no collisions
+ *   - a chamfer distance transform lets marks shrink toward silhouette
+ *     edges (edge fade) for clean boundaries */
 
 import type { GeneratorDef, GeneratorContext, ParamValues, SvgDoc } from '../types';
+import { distanceField } from '../core/fields';
 import { sampleLayout, type LayoutId } from './sampling';
 import { renderMark, MARK_SHAPE_OPTIONS, type MarkShapeId, type MarkStyle } from './markShapes';
-
-/** 3-4-chamfer distance transform (in cell units) of painted mask cells. */
-function distanceField(mask: Uint8Array, G: number): Float32Array {
-  const INF = 1e9;
-  const d = new Float32Array(G * G);
-  for (let i = 0; i < mask.length; i++) d[i] = mask[i] ? INF : 0;
-  // forward pass
-  for (let y = 0; y < G; y++) {
-    for (let x = 0; x < G; x++) {
-      const i = y * G + x;
-      if (d[i] === 0) continue;
-      let m = d[i];
-      if (x > 0) m = Math.min(m, d[i - 1] + 3);
-      if (y > 0) {
-        m = Math.min(m, d[i - G] + 3);
-        if (x > 0) m = Math.min(m, d[i - G - 1] + 4);
-        if (x < G - 1) m = Math.min(m, d[i - G + 1] + 4);
-      }
-      d[i] = m;
-    }
-  }
-  // backward pass
-  for (let y = G - 1; y >= 0; y--) {
-    for (let x = G - 1; x >= 0; x--) {
-      const i = y * G + x;
-      if (d[i] === 0) continue;
-      let m = d[i];
-      if (x < G - 1) m = Math.min(m, d[i + 1] + 3);
-      if (y < G - 1) {
-        m = Math.min(m, d[i + G] + 3);
-        if (x < G - 1) m = Math.min(m, d[i + G + 1] + 4);
-        if (x > 0) m = Math.min(m, d[i + G - 1] + 4);
-      }
-      d[i] = m;
-    }
-  }
-  for (let i = 0; i < d.length; i++) d[i] /= 3; // ≈ cell units
-  return d;
-}
 
 function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
   const { mask, G, S, size, rnd, palette } = ctx;
 
   const layout = p.layout as LayoutId;
-  const pitch = (p.spacing as number) * S;
+  const pitch = p.spacing as number; // document units
   const field = sampleLayout(layout, {
     mask,
     G,
@@ -70,12 +34,13 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
   // Collision-free radius budget from the layout's enforced spacing.
   const overlapAllowed = p.allowOverlap as boolean;
   const budget = overlapAllowed ? pitch * 0.75 : field.minDist * 0.5 * 0.94;
-  const baseR = Math.max(0.5, budget * ((p.size as number) / 100));
+  const baseR = Math.max(0.35, budget * ((p.size as number) / 100));
 
   const vary = (p.sizeVariance as number) / 100;
   const edgeFade = (p.edgeFade as number) / 100;
   const baseRot = p.rotation as number;
   const randRot = p.randomRotation as boolean;
+  const accentMix = (p.accentMix as number) / 100;
 
   const style: MarkStyle = {
     thickness: (p.thickness as number) / 100,
@@ -85,7 +50,7 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
   const shape = p.shape as MarkShapeId;
 
   const dist = edgeFade > 0 ? distanceField(mask, G) : null;
-  const fadeRange = Math.max(1, (p.spacing as number) * 1.5); // cells
+  const fadeRange = Math.max(1, (pitch / S) * 1.5); // cells
 
   let body = '';
   let count = 0;
@@ -97,12 +62,12 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
       const t = Math.min(1, dist[ci] / fadeRange);
       r *= 1 - edgeFade * (1 - t);
     }
-    if (r < 0.45) continue;
+    if (r < 0.3) continue;
     const ang = baseRot + (randRot ? rnd() * 360 : 0);
-    const fill = palette.zones[(pt.zone - 1) % 4];
+    const fill = accentMix > 0 && rnd() < accentMix ? palette.secondary : palette.primary;
     body += renderMark(shape, pt.x, pt.y, r, fill, ang, style);
     count++;
-    if (count > 60000) break; // hard safety valve
+    if (count > 80000) break; // hard safety valve
   }
 
   return { size, body: `<g>${body}</g>` };
@@ -112,18 +77,18 @@ export const marksGenerator: GeneratorDef = {
   id: 'marks',
   name: 'Marks',
   tagline: 'Blue-noise mark fields',
-  zoneLabels: ['Field 1', 'Field 2', 'Field 3', 'Field 4'],
   defaults: {
     layout: 'poisson',
     shape: 'cross',
-    spacing: 5,
+    spacing: 14,
     size: 72,
     sizeVariance: 0,
     jitter: 0,
-    edgeFade: 0,
+    edgeFade: 35,
     rotation: 0,
     randomRotation: false,
     thickness: 24,
+    accentMix: 0,
     roundCaps: false,
     hollow: false,
     allowOverlap: false,
@@ -145,13 +110,14 @@ export const marksGenerator: GeneratorDef = {
         { value: 'hex', label: 'Hex' },
       ],
     },
-    { kind: 'slider', key: 'spacing', label: 'Spacing', min: 2, max: 16, step: 0.5 },
+    { kind: 'slider', key: 'spacing', label: 'Spacing', min: 3, max: 64, step: 0.5 },
     { kind: 'slider', key: 'size', label: 'Mark size', min: 10, max: 100, unit: '%' },
     { kind: 'slider', key: 'sizeVariance', label: 'Size variance', min: 0, max: 100, unit: '%' },
     { kind: 'slider', key: 'jitter', label: 'Jitter', min: 0, max: 100, unit: '%' },
     { kind: 'slider', key: 'edgeFade', label: 'Edge fade', min: 0, max: 100, unit: '%' },
     { kind: 'slider', key: 'thickness', label: 'Stroke weight', min: 6, max: 60, unit: '%' },
     { kind: 'slider', key: 'rotation', label: 'Rotation', min: 0, max: 90, unit: '°' },
+    { kind: 'slider', key: 'accentMix', label: 'Accent mix', min: 0, max: 100, unit: '%' },
     { kind: 'toggle', key: 'randomRotation', label: 'Random rotation' },
     { kind: 'toggle', key: 'roundCaps', label: 'Round caps' },
     { kind: 'toggle', key: 'hollow', label: 'Hollow shapes' },

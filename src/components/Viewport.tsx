@@ -1,14 +1,24 @@
 /** Center workspace: zoom/pan stage containing the drawing document and the
- *  generated result. Left-drag draws (draw mode) or pans (result mode);
- *  space/middle-drag always pans; wheel zooms around the cursor. */
+ *  generated result.
+ *
+ *  Crisp rendering: the document element is laid out at `size × scale`
+ *  pixels (no CSS scale transform), so inline SVG re-renders as true
+ *  vectors at every zoom level instead of being rasterised and stretched.
+ *
+ *  Interaction model:
+ *   - draw mode:  left-drag paints, space/middle-drag pans
+ *   - preview:    left-drag pans
+ *   - wheel zooms around the cursor
+ *  All floating controls sit outside the pointer surface (or stop
+ *  propagation), so UI clicks can never be swallowed by pan/draw capture. */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useStore } from '../state/store';
-import { useGeneratedSvg } from '../hooks/useGeneratedSvg';
+import { useStore, MASK_G } from '../state/store';
+import type { GeneratedResult } from '../hooks/useGeneratedSvg';
 import { stampLine, maskToImageData, isEmpty } from '../mask/maskOps';
 import { parseHex } from '../core/color';
 import { decodeImageFile } from '../raster/preprocess';
-import { IconFit, IconZoomIn, IconZoomOut, IconLogo, IconEraser } from './icons';
+import { IconFit, IconZoomIn, IconZoomOut, IconLogo } from './icons';
 
 const DOC = 512; // document edge in stage pixels at scale 1
 
@@ -18,7 +28,7 @@ interface View {
   ty: number;
 }
 
-export function Viewport() {
+export function Viewport({ generated }: { generated: GeneratedResult }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [view, setView] = useState<View>({ scale: 1, tx: 0, ty: 0 });
@@ -33,17 +43,13 @@ export function Viewport() {
   const panRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
 
   const viewMode = useStore((s) => s.viewMode);
-  const setViewMode = useStore((s) => s.setViewMode);
-  const G = useStore((s) => s.G);
   const maskRev = useStore((s) => s.maskRev);
-  const zones = useStore((s) => s.palette.zones);
-  const zone = useStore((s) => s.zone);
-  const setZone = useStore((s) => s.setZone);
-  const tool = useStore((s) => s.tool);
-  const setTool = useStore((s) => s.setTool);
+  const primary = useStore((s) => s.palette.primary);
   const bgOn = useStore((s) => s.bgOn);
-
-  const generated = useGeneratedSvg();
+  const maskEmpty = useStore((s) => {
+    void s.maskRev; // recompute when the mask changes
+    return isEmpty(s.mask);
+  });
 
   // ---------- fit & zoom ----------
   const fit = useCallback(() => {
@@ -112,16 +118,12 @@ export function Viewport() {
     const cv = canvasRef.current;
     if (!cv) return;
     const s = useStore.getState();
-    cv.width = s.G;
-    cv.height = s.G;
-    const zoneRgb = s.palette.zones.map((z) => parseHex(z) ?? [255, 255, 255]) as [
-      number,
-      number,
-      number,
-    ][];
+    cv.width = MASK_G;
+    cv.height = MASK_G;
+    const ink = parseHex(s.palette.primary) ?? [255, 255, 255];
     const ctx = cv.getContext('2d')!;
-    ctx.putImageData(maskToImageData(s.mask, s.G, zoneRgb), 0, 0);
-  }, [maskRev, G, zones]);
+    ctx.putImageData(maskToImageData(s.mask, MASK_G, ink as [number, number, number]), 0, 0);
+  }, [maskRev, primary]);
 
   // ---------- pointer: draw & pan ----------
   const cellOf = (e: React.PointerEvent): { x: number; y: number } | null => {
@@ -130,9 +132,9 @@ export function Viewport() {
     const r = el.getBoundingClientRect();
     const dx = (e.clientX - r.left - view.tx) / view.scale;
     const dy = (e.clientY - r.top - view.ty) / view.scale;
-    const x = Math.floor((dx / DOC) * G);
-    const y = Math.floor((dy / DOC) * G);
-    if (x < 0 || y < 0 || x >= G || y >= G) return null;
+    const x = Math.floor((dx / DOC) * MASK_G);
+    const y = Math.floor((dy / DOC) * MASK_G);
+    if (x < 0 || y < 0 || x >= MASK_G || y >= MASK_G) return null;
     return { x, y };
   };
 
@@ -140,13 +142,13 @@ export function Viewport() {
     const s = useStore.getState();
     stampLine(
       s.mask,
-      s.G,
+      MASK_G,
       from.x,
       from.y,
       to.x,
       to.y,
       s.brushSize,
-      s.tool === 'erase' ? 0 : s.zone,
+      s.tool === 'erase' ? 0 : 1,
       s.mirror,
     );
     s.bumpMask();
@@ -155,8 +157,10 @@ export function Viewport() {
   const onPointerDown = (e: React.PointerEvent) => {
     const el = rootRef.current;
     if (!el) return;
+    // never hijack clicks on floating UI
+    if ((e.target as HTMLElement).closest('.vp-float')) return;
     const wantPan =
-      e.button === 1 || spaceRef.current || (e.button === 0 && viewMode === 'result');
+      e.button === 1 || spaceRef.current || (e.button === 0 && viewMode === 'preview');
     if (wantPan) {
       panRef.current = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
       setPanning(true);
@@ -188,7 +192,9 @@ export function Viewport() {
     }
   };
 
-  const endPointer = () => {
+  const endPointer = (e: React.PointerEvent) => {
+    const el = rootRef.current;
+    if (el?.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
     panRef.current = null;
     setPanning(false);
     strokeRef.current = { last: null, active: false };
@@ -205,16 +211,16 @@ export function Viewport() {
       const img = await decodeImageFile(file);
       s.setImported(img);
       s.applyImportToMask();
-      s.setViewMode('draw');
+      s.setViewMode('preview');
       s.showToast(`Imported ${file.name}`);
     } catch (err) {
       s.showToast(err instanceof Error ? err.message : 'Import failed', true);
     }
   };
 
-  const maskEmpty = isEmpty(useStore.getState().mask);
   const pct = Math.round(view.scale * 100);
-  const showResult = viewMode === 'result';
+  const preview = viewMode === 'preview';
+  const docPx = DOC * view.scale;
 
   return (
     <div
@@ -230,71 +236,41 @@ export function Viewport() {
       }}
       onDragLeave={() => setDragover(false)}
       onDrop={onDrop}
-      style={{ cursor: panning ? 'grabbing' : showResult ? 'grab' : 'crosshair' }}
+      style={{ cursor: panning ? 'grabbing' : preview ? 'grab' : 'crosshair' }}
     >
-      <div
-        className="vp-stage"
-        style={{ transform: `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})` }}
-      >
+      {/* Layout-sized document: SVG renders as true vectors at every zoom. */}
+      <div className="vp-stage" style={{ transform: `translate(${view.tx}px, ${view.ty}px)` }}>
         <div
-          className={`vp-doc ${showResult ? (bgOn ? '' : 'vp-doc--checker') : 'vp-doc--grid'}`}
-          style={{ width: DOC, height: DOC }}
+          className={`vp-doc ${preview ? (bgOn ? '' : 'vp-doc--checker') : 'vp-doc--grid'}`}
+          style={{ width: docPx, height: docPx }}
         >
           <canvas
             ref={canvasRef}
             className="pixelated"
-            style={{ display: showResult ? 'none' : 'block' }}
+            style={{ display: preview ? 'none' : 'block' }}
           />
-          {showResult && generated.svg ? (
+          {preview && generated.svg ? (
             <div className="vp-svgwrap" dangerouslySetInnerHTML={{ __html: generated.svg }} />
+          ) : null}
+          {preview && maskEmpty ? (
+            <div className="vp-docempty">
+              <span className="vp-empty-logo">
+                <IconLogo size={38} />
+              </span>
+              <div className="vp-empty-title">Nothing to render yet</div>
+              <p>
+                Draw a shape, or drop a PNG / JPG / SVG
+                <br />
+                anywhere on the canvas
+              </p>
+            </div>
           ) : null}
         </div>
       </div>
 
-      {/* mode + zone chips */}
-      <div className="viewport-toolbar">
-        <div className="vp-chipgroup">
-          <button
-            className={`vp-chip${!showResult ? ' active' : ''}`}
-            onClick={() => setViewMode('draw')}
-          >
-            Draw
-          </button>
-          <button
-            className={`vp-chip${showResult ? ' active' : ''}`}
-            onClick={() => setViewMode('result')}
-          >
-            Result
-          </button>
-          <span className={`vp-workdot${generated.busy ? ' on' : ''}`} />
-        </div>
-        {!showResult ? (
-          <div className="vp-chipgroup">
-            {[1, 2, 3, 4].map((z) => (
-              <button
-                key={z}
-                className={`vp-chip vp-zonechip${tool === 'brush' && zone === z ? ' active' : ''}`}
-                onClick={() => setZone(z as 1 | 2 | 3 | 4)}
-                title={`Pen ${z} (key ${z})`}
-              >
-                <span className="dotswatch" style={{ background: zones[z - 1] }} />
-                {z}
-              </button>
-            ))}
-            <button
-              className={`vp-chip vp-chip--icon${tool === 'erase' ? ' active' : ''}`}
-              onClick={() => setTool('erase')}
-              title="Eraser (E)"
-            >
-              <IconEraser size={12} />
-            </button>
-          </div>
-        ) : null}
-      </div>
-
       {/* zoom cluster */}
-      <div className="viewport-toolbar viewport-toolbar--bottom">
-        <div className="vp-chipgroup">
+      <div className="viewport-toolbar viewport-toolbar--bottom vp-float">
+        <div className="vp-chipgroup" onPointerDown={(e) => e.stopPropagation()}>
           <button
             className="vp-chip vp-chip--icon"
             onClick={() => {
@@ -323,24 +299,8 @@ export function Viewport() {
         </div>
       </div>
 
-      {showResult && generated.empty && maskEmpty ? (
-        <div className="vp-empty">
-          <div className="vp-empty-inner">
-            <span className="vp-empty-logo">
-              <IconLogo size={40} />
-            </span>
-            <div className="vp-empty-title">Nothing to render yet</div>
-            <p>
-              Switch to draw mode and paint a shape,
-              <br />
-              or drop a PNG / JPG / SVG anywhere
-            </p>
-          </div>
-        </div>
-      ) : null}
-
       <div className="viewport-hint">
-        {showResult ? 'drag to pan · wheel to zoom' : 'draw · space+drag to pan · wheel to zoom'}
+        {preview ? 'drag to pan · wheel to zoom' : 'draw · space+drag to pan · wheel to zoom'}
       </div>
     </div>
   );
