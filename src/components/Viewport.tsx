@@ -33,6 +33,12 @@ export function Viewport({ generated }: { generated: GeneratedResult }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [view, setView] = useState<View>({ scale: 1, tx: 0, ty: 0 });
+  /** Scale at which the document was last laid out. During a zoom gesture
+   *  the difference to view.scale is bridged with a GPU-composited CSS
+   *  transform (cheap), and the expensive vector re-layout happens once
+   *  when the gesture settles — keeping heavy SVGs (contours) smooth. */
+  const [committedScale, setCommittedScale] = useState(1);
+  const commitTimer = useRef<number | undefined>(undefined);
   const [dragover, setDragover] = useState(false);
   const [panning, setPanning] = useState(false);
 
@@ -65,7 +71,16 @@ export function Viewport({ generated }: { generated: GeneratedResult }) {
     const h = el.clientHeight;
     const scale = Math.max(0.05, Math.min((w - 96) / docW, (h - 96) / docH));
     setView({ scale, tx: (w - docW * scale) / 2, ty: (h - docH * scale) / 2 });
+    setCommittedScale(scale); // no interim blur on fit
   }, [docW, docH]);
+
+  // commit the layout scale shortly after the zoom gesture settles
+  useEffect(() => {
+    if (view.scale === committedScale) return;
+    window.clearTimeout(commitTimer.current);
+    commitTimer.current = window.setTimeout(() => setCommittedScale(view.scale), 160);
+    return () => window.clearTimeout(commitTimer.current);
+  }, [view.scale, committedScale]);
 
   useEffect(() => {
     fit();
@@ -241,11 +256,17 @@ export function Viewport({ generated }: { generated: GeneratedResult }) {
       onDrop={onDrop}
       style={{ cursor: panning ? 'grabbing' : preview ? 'grab' : 'crosshair' }}
     >
-      {/* Layout-sized document: SVG renders as true vectors at every zoom. */}
+      {/* Document laid out at the committed scale; the live gesture is
+          bridged with a GPU transform, then re-laid-out crisp at rest. */}
       <div className="vp-stage" style={{ transform: `translate(${view.tx}px, ${view.ty}px)` }}>
         <div
           className={`vp-doc ${preview ? (bgOn ? '' : 'vp-doc--checker') : 'vp-doc--grid'}`}
-          style={{ width: docW * view.scale, height: docH * view.scale }}
+          style={{
+            width: docW * committedScale,
+            height: docH * committedScale,
+            transform: `scale(${view.scale / committedScale})`,
+            transformOrigin: '0 0',
+          }}
         >
           <canvas
             ref={canvasRef}

@@ -80,7 +80,8 @@
 
 /* transform stage: zoom & pan applied here */
 .vp-stage{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform}
-.vp-doc{position:relative;box-shadow:0 24px 70px rgba(0,0,0,.6)}
+.vp-doc{position:relative;box-shadow:0 24px 70px rgba(0,0,0,.6);
+  will-change:transform;contain:layout paint}
 .vp-doc>canvas,.vp-doc>svg,.vp-doc .vp-svgwrap{position:absolute;inset:0;width:100%;height:100%;display:block}
 .vp-doc .vp-svgwrap svg{width:100%;height:100%;display:block}
 .vp-doc canvas.pixelated{image-rendering:pixelated}

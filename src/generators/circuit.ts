@@ -141,7 +141,16 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
   const c = (v: number) => v * S + S / 2;
   const cy2 = (v: number) => v * S + S / 2;
   const mask = downsampleMask(srcMask, srcGW, srcGH, G, GH);
-  placeComponents(mask, G, GH, Math.round(p.chips as number), Math.round(p.parts as number), rnd);
+  // "Tech parts" off → pure traces + pads/vias: no ICs, no components
+  const techParts = p.techParts as boolean;
+  placeComponents(
+    mask,
+    G,
+    GH,
+    techParts ? Math.round(p.chips as number) : 0,
+    techParts ? Math.round(p.parts as number) : 0,
+    rnd,
+  );
 
   const chipBody = luminance(palette.bg) > 128 ? darken(palette.bg, 0.78) : lighten(palette.bg, 0.07);
   const COL = {
@@ -578,6 +587,7 @@ export const circuitGenerator: GeneratorDef = {
     traceLength: 22,
     straightness: 62,
     branching: 25,
+    techParts: true,
     chips: 2,
     parts: 6,
     clearance: false,
@@ -602,6 +612,7 @@ export const circuitGenerator: GeneratorDef = {
     { kind: 'slider', key: 'traceLength', label: 'Trace length', min: 6, max: 60 },
     { kind: 'slider', key: 'straightness', label: 'Straightness', min: 20, max: 95, unit: '%' },
     { kind: 'slider', key: 'branching', label: 'Branching', min: 0, max: 100, unit: '%' },
+    { kind: 'toggle', key: 'techParts', label: 'Tech parts (ICs & co.)' },
     { kind: 'slider', key: 'chips', label: 'IC chips', min: 0, max: 8 },
     { kind: 'slider', key: 'parts', label: 'Components', min: 0, max: 20 },
     { kind: 'slider', key: 'strokeWidth', label: 'Stroke width', min: 40, max: 200, unit: '%' },

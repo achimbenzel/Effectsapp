@@ -105,6 +105,24 @@ function stitch(segs: [Pt, Pt][]): Pt[][] {
   return polys;
 }
 
+/** Drop points closer than minDist to the previous kept point. Chaikin
+ *  multiplies point counts fast; sub-half-cell segments are invisible but
+ *  dominate SVG size and rasterisation cost, so thinning keeps zooming
+ *  and re-rendering fast without changing the visible curve. */
+function thin(pts: Pt[], minDist: number): Pt[] {
+  if (pts.length <= 3) return pts;
+  const m2 = minDist * minDist;
+  const out: Pt[] = [pts[0]];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const last = out[out.length - 1];
+    const dx = pts[i][0] - last[0];
+    const dy = pts[i][1] - last[1];
+    if (dx * dx + dy * dy >= m2) out.push(pts[i]);
+  }
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+
 /** Chaikin corner cutting; closed polylines wrap around. */
 function chaikin(pts: Pt[], iterations: number, closed: boolean): Pt[] {
   let out = pts;
@@ -155,7 +173,7 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
       const closed =
         Math.abs(poly[0][0] - poly[poly.length - 1][0]) < 0.02 &&
         Math.abs(poly[0][1] - poly[poly.length - 1][1]) < 0.02;
-      const pts = chaikin(closed ? poly.slice(0, -1) : poly, smoothing, closed);
+      const pts = thin(chaikin(closed ? poly.slice(0, -1) : poly, smoothing, closed), 0.45);
       d += `M${f((pts[0][0] + 0.5) * S)} ${f((pts[0][1] + 0.5) * S)}`;
       for (let i = 1; i < pts.length; i++)
         d += `L${f((pts[i][0] + 0.5) * S)} ${f((pts[i][1] + 0.5) * S)}`;
