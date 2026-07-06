@@ -4,7 +4,13 @@
  *  control specs, so new generators need zero sidebar work. */
 
 import { useRef, useState } from 'react';
-import { useStore, useActiveGenerator, THEME_PRESETS } from '../state/store';
+import {
+  useStore,
+  useActiveGenerator,
+  THEME_PRESETS,
+  CANVAS_PRESETS,
+  aspectToCells,
+} from '../state/store';
 import { GENERATORS } from '../generators/registry';
 import { decodeImageFile } from '../raster/preprocess';
 import { generateCurrent } from '../hooks/useGeneratedSvg';
@@ -60,6 +66,79 @@ function GeneratorControls() {
   };
 
   return <>{gen.controls.map(render)}</>;
+}
+
+/** Canvas format picker: aspect presets + custom width/height. */
+function CanvasSection() {
+  const canvasPresetId = useStore((s) => s.canvasPresetId);
+  const setCanvas = useStore((s) => s.setCanvas);
+  const GW = useStore((s) => s.GW);
+  const GH = useStore((s) => s.GH);
+  const [customW, setCustomW] = useState('1600');
+  const [customH, setCustomH] = useState('1200');
+
+  const applyCustom = (wStr: string, hStr: string) => {
+    const w = parseFloat(wStr);
+    const h = parseFloat(hStr);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
+    const ar = Math.max(0.15, Math.min(6, w / h));
+    const cells = aspectToCells(ar);
+    setCanvas('custom', cells.GW, cells.GH);
+  };
+
+  return (
+    <section className="side-section">
+      <h2 className="side-heading">
+        <span className="heading-dot heading-dot--teal" />
+        Canvas
+      </h2>
+      <div className="side-rows">
+        <Select
+          value={canvasPresetId}
+          options={CANVAS_PRESETS.map((cp) => ({ value: cp.id, label: cp.label }))}
+          onChange={(id) => {
+            const preset = CANVAS_PRESETS.find((cp) => cp.id === id);
+            if (!preset) return;
+            if (preset.aspect === null) {
+              applyCustom(customW, customH);
+            } else {
+              const cells = aspectToCells(preset.aspect);
+              setCanvas(id, cells.GW, cells.GH);
+            }
+          }}
+        />
+        {canvasPresetId === 'custom' ? (
+          <div className="inline-field">
+            <span className="control-label">W × H</span>
+            <div className="custom-size">
+              <input
+                className="colorfield-hexinput"
+                value={customW}
+                inputMode="numeric"
+                onChange={(e) => setCustomW(e.target.value)}
+                onBlur={() => applyCustom(customW, customH)}
+                onKeyDown={(e) => e.key === 'Enter' && applyCustom(customW, customH)}
+                aria-label="Custom width"
+              />
+              <span className="control-label">×</span>
+              <input
+                className="colorfield-hexinput"
+                value={customH}
+                inputMode="numeric"
+                onChange={(e) => setCustomH(e.target.value)}
+                onBlur={() => applyCustom(customW, customH)}
+                onKeyDown={(e) => e.key === 'Enter' && applyCustom(customW, customH)}
+                aria-label="Custom height"
+              />
+            </div>
+          </div>
+        ) : null}
+        <p className="side-note">
+          {GW * 4} × {GH * 4} units · drawing is refitted on change
+        </p>
+      </div>
+    </section>
+  );
 }
 
 export function Sidebar() {
@@ -128,6 +207,9 @@ export function Sidebar() {
 
   return (
     <aside className="sidebar">
+      {/* ---------- 0 · CANVAS ---------- */}
+      <CanvasSection />
+
       {/* ---------- 1 · IMPORT ---------- */}
       <section className="side-section">
         <h2 className="side-heading">
@@ -160,6 +242,16 @@ export function Sidebar() {
                 {imported.width} × {imported.height}px
               </p>
               <p className="side-note">Image processing</p>
+              <Select
+                label="Extraction"
+                value={preprocess.mode}
+                options={[
+                  { value: 'auto', label: 'Auto (detect)' },
+                  { value: 'shape', label: 'Shape — threshold' },
+                  { value: 'tone', label: 'Tone — dithered image' },
+                ]}
+                onChange={(v) => tweak({ mode: v as 'auto' | 'shape' | 'tone' })}
+              />
               <Slider
                 label="Threshold"
                 min={0}

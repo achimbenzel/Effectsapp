@@ -18,16 +18,25 @@ npm run preview    # serve the production build
 
 ## Workflow
 
-1. **Draw** — paint on the high-resolution ink canvas (brush, eraser, mirror modes,
+1. **Canvas** — pick a format: 1:1, 4:5, 16:9, 9:16, A4 portrait/landscape or a custom
+   width × height. Everything (drawing, import, generators, preview, export) follows
+   the chosen aspect ratio.
+2. **Draw** — paint on the high-resolution ink canvas (brush, eraser, mirror modes,
    undo/redo). Drawing tools live in the toolbar above the canvas and appear only in
    Draw mode.
-2. **Import** — drop a PNG/JPG/SVG anywhere, or use the sidebar. Image-processing
-   controls (threshold, brightness, contrast, blur, edge detect, invert, denoise)
-   re-extract the shape live; flat backgrounds are removed automatically.
-3. **Generate** — pick a generator and tune it; the preview re-renders in real time and
+3. **Import** — drop a PNG/JPG/SVG anywhere, or use the sidebar. Line art is
+   thresholded ("shape"); colour/greyscale images are Floyd–Steinberg dithered
+   ("tone", auto-detected) into a density mask plus tone and colour fields, so marks
+   can scale with image darkness and take the source colours — the imported picture
+   stays recognisable. Image-processing controls re-extract live.
+4. **Generate** — pick a generator and tune it; the preview re-renders in real time and
    stays vector-crisp at any zoom. `R` re-rolls the seed.
-4. **Export** — vector SVG, or PNG at 512–4096 px, with padding and transparent
-   background. Projects can be saved/reopened as `.gridforge.json` files.
+5. **Export** — vector SVG, or PNG at 512–4096 px (long side), with padding and
+   transparent background. Projects can be saved/reopened as `.gridforge.json` files.
+
+The header settings menu (gear) selects the UI chrome theme (Aero Dark, Light, Clean,
+Experience, Signal Core) and can load a custom CSS file that overrides the design
+tokens — both persist across sessions.
 
 ### Generators
 
@@ -79,10 +88,13 @@ src/
   components/            topbar, canvas toolbar, viewport (zoom/pan/draw), sidebar
 ```
 
-**Rendering**: the document is a fixed 256×256 ink mask; each generator picks its own
-working resolution from it (the circuit router downsamples, marks sample it directly).
-The preview lays the SVG out at its zoomed pixel size — no CSS-scale rasterisation —
-so zooming stays sharp like professional design software.
+**Rendering**: the document is an ink mask whose long side is 256 cells (aspect
+follows the canvas format), plus optional tone/colour fields from tonal imports; each
+generator picks its own working resolution from it (the circuit router downsamples,
+marks sample it directly). Circuit pads/vias pass through a circle registry with true
+outer-radius collision checks, so circles never overlap. The preview lays the SVG out
+at its zoomed pixel size — no CSS-scale rasterisation — so zooming stays sharp like
+professional design software.
 
 **Adding a generator**: implement `GeneratorDef` (a pure
 `generate(ctx, params) → SvgDoc` plus declarative control specs) and register it in

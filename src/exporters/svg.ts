@@ -10,16 +10,15 @@ export interface WrapOptions {
 }
 
 export function wrapSvg(doc: SvgDoc, opts: WrapOptions): string {
-  const total = doc.size + opts.padding * 2;
+  const totalW = doc.width + opts.padding * 2;
+  const totalH = doc.height + opts.padding * 2;
   const bg = opts.background
-    ? `<rect x="-${opts.padding}" y="-${opts.padding}" width="${total}" height="${total}" fill="${opts.background}"/>`
+    ? `<rect x="-${opts.padding}" y="-${opts.padding}" width="${totalW}" height="${totalH}" fill="${opts.background}"/>`
     : '';
   const css = doc.css ? `<style>${doc.css}</style>` : '';
-  const inner =
-    opts.padding > 0 ? `<g transform="translate(0 0)">${doc.body}</g>` : doc.body;
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${-opts.padding} ${-opts.padding} ${total} ${total}" width="${total}" height="${total}">` +
-    `${css}${bg}${inner}</svg>`
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${-opts.padding} ${-opts.padding} ${totalW} ${totalH}" width="${totalW}" height="${totalH}">` +
+    `${css}${bg}${doc.body}</svg>`
   );
 }
 

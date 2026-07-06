@@ -10,12 +10,12 @@ import { distanceField } from '../core/fields';
 
 type Pt = [number, number];
 
-/** Marching squares at threshold t over a G×G scalar field (cell centres).
+/** Marching squares at threshold t over a GW×GH scalar field (cell centres).
  *  Returns line segments in cell coordinates. */
-function marchingSquares(field: Float32Array, G: number, t: number): [Pt, Pt][] {
+function marchingSquares(field: Float32Array, GW: number, GH: number, t: number): [Pt, Pt][] {
   const segs: [Pt, Pt][] = [];
   const v = (x: number, y: number) =>
-    x < 0 || y < 0 || x >= G || y >= G ? 0 : field[y * G + x];
+    x < 0 || y < 0 || x >= GW || y >= GH ? 0 : field[y * GW + x];
 
   // interpolate the crossing point between two corners
   const lerp = (x0: number, y0: number, v0: number, x1: number, y1: number, v1: number): Pt => {
@@ -24,8 +24,8 @@ function marchingSquares(field: Float32Array, G: number, t: number): [Pt, Pt][] 
     return [x0 + (x1 - x0) * f, y0 + (y1 - y0) * f];
   };
 
-  for (let y = -1; y < G; y++) {
-    for (let x = -1; x < G; x++) {
+  for (let y = -1; y < GH; y++) {
+    for (let x = -1; x < GW; x++) {
       const tl = v(x, y);
       const tr = v(x + 1, y);
       const br = v(x + 1, y + 1);
@@ -127,13 +127,13 @@ function chaikin(pts: Pt[], iterations: number, closed: boolean): Pt[] {
 }
 
 function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
-  const { mask, G, S, size, palette } = ctx;
+  const { mask, GW, GH, S, W, H, palette } = ctx;
   const f = (n: number) => (Math.round(n * 100) / 100).toString();
 
-  const dist = distanceField(mask, G);
+  const dist = distanceField(mask, GW, GH);
   let maxDist = 0;
   for (let i = 0; i < dist.length; i++) if (dist[i] > maxDist) maxDist = dist[i];
-  if (maxDist <= 0) return { size, body: '' };
+  if (maxDist <= 0) return { width: W, height: H, body: '' };
 
   const stepCells = Math.max(0.75, (p.spacing as number) / S);
   const smoothing = Math.round(p.smoothing as number);
@@ -148,7 +148,7 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
 
   let body = '';
   levels.forEach((t, li) => {
-    const polys = stitch(marchingSquares(dist, G, t));
+    const polys = stitch(marchingSquares(dist, GW, GH, t));
     let d = '';
     for (const poly of polys) {
       if (poly.length < 3) continue;
@@ -168,7 +168,7 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
     body += `<path class="trace" d="${d}" fill="none" stroke="${color}" stroke-width="${f(w)}" stroke-linejoin="round" stroke-linecap="round"/>`;
   });
 
-  return { size, body };
+  return { width: W, height: H, body };
 }
 
 export const contoursGenerator: GeneratorDef = {

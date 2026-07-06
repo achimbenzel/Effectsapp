@@ -14,16 +14,16 @@ function hatchPass(
   jitter: number,
   rnd: () => number,
 ): string {
-  const { mask, G, S, size } = ctx;
+  const { mask, GW, GH, S, W, H } = ctx;
   const f = (n: number) => (Math.round(n * 100) / 100).toString();
   const rad = (angleDeg * Math.PI) / 180;
   const dx = Math.cos(rad);
   const dy = Math.sin(rad);
   const nx = -dy;
   const ny = dx;
-  const cx = size / 2;
-  const cy = size / 2;
-  const L = size * 0.75; // half-diagonal reach
+  const cx = W / 2;
+  const cy = H / 2;
+  const L = Math.hypot(W, H) / 2 + spacing; // half-diagonal reach
   const step = S * 0.5; // sampling resolution along each line
 
   let d = '';
@@ -37,7 +37,7 @@ function hatchPass(
       const x = bx + dx * t;
       const y = by + dy * t;
       const inside =
-        t <= L && x >= 0 && y >= 0 && x < size && y < size && zoneAt(mask, G, S, x, y) !== 0;
+        t <= L && x >= 0 && y >= 0 && x < W && y < H && zoneAt(mask, GW, GH, S, x, y) !== 0;
       if (inside && !runStart) runStart = [x, y];
       if (!inside && runStart && prev) {
         if (Math.hypot(prev[0] - runStart[0], prev[1] - runStart[1]) >= S) {
@@ -52,7 +52,7 @@ function hatchPass(
 }
 
 function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
-  const { size, rnd, palette } = ctx;
+  const { W, H, rnd, palette } = ctx;
   const f = (n: number) => (Math.round(n * 100) / 100).toString();
 
   const spacing = p.spacing as number;
@@ -71,7 +71,7 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
     if (d2)
       body += `<path d="${d2}" fill="none" stroke="${palette.primary}" stroke-width="${f(strokeW)}" stroke-linecap="${cap}" opacity="0.85"/>`;
   }
-  return { size, body };
+  return { width: W, height: H, body };
 }
 
 export const hatchingGenerator: GeneratorDef = {

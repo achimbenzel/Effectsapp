@@ -1,20 +1,19 @@
 /** Central application state (zustand).
  *
- *  The mask lives here as a mutable Uint8Array; drawing mutates it in place
- *  for performance and bumps `maskRev` to notify subscribers. Undo/redo
- *  snapshots are taken per completed stroke / structural change.
- *
- *  The document works on a fixed high-resolution 256×256 ink mask — fine
- *  enough for detailed imports; generators choose their own working
- *  resolution from it (e.g. the circuit router downsamples). */
+ *  Document model: an ink mask (Uint8Array) at ~4 SVG units per cell, plus
+ *  optional tone/colour fields captured from tonal image imports. The
+ *  canvas supports arbitrary aspect ratios; the long side is always
+ *  DOC_LONG units / MASK_LONG cells. Drawing mutates the mask in place and
+ *  bumps `maskRev`; undo/redo snapshots are taken per completed stroke or
+ *  structural change. */
 
 import { create } from 'zustand';
 import type { ParamValues, Palette } from '../types';
 import { GENERATORS } from '../generators/registry';
-import { createMask, fillEmpty, type MirrorMode } from '../mask/maskOps';
+import { createMask, fillEmpty, resampleMask, type MirrorMode } from '../mask/maskOps';
 import {
   DEFAULT_PREPROCESS,
-  imageToMask,
+  extractFromImage,
   type ImportedImage,
   type PreprocessParams,
 } from '../raster/preprocess';
@@ -23,11 +22,43 @@ import { randomSeed } from '../core/rng';
 export type ToolId = 'brush' | 'erase';
 export type ViewMode = 'draw' | 'preview';
 
-/** Fixed mask resolution. */
-export const MASK_G = 256;
+/** Document long side in SVG units / mask cells. */
+export const DOC_LONG = 1024;
+export const MASK_LONG = 256;
+/** SVG units per mask cell. */
+export const CELL = DOC_LONG / MASK_LONG;
+
+export interface CanvasPreset {
+  id: string;
+  label: string;
+  /** aspect = width / height; null = custom */
+  aspect: number | null;
+}
+
+export const CANVAS_PRESETS: CanvasPreset[] = [
+  { id: '1:1', label: 'Square 1:1', aspect: 1 },
+  { id: '4:5', label: 'Portrait 4:5', aspect: 4 / 5 },
+  { id: '16:9', label: 'Wide 16:9', aspect: 16 / 9 },
+  { id: '9:16', label: 'Story 9:16', aspect: 9 / 16 },
+  { id: 'a4p', label: 'A4 portrait', aspect: 1 / Math.SQRT2 },
+  { id: 'a4l', label: 'A4 landscape', aspect: Math.SQRT2 },
+  { id: 'custom', label: 'Custom…', aspect: null },
+];
+
+/** Convert an aspect ratio into cell dimensions (long side = MASK_LONG). */
+export function aspectToCells(aspect: number): { GW: number; GH: number } {
+  if (aspect >= 1) {
+    return { GW: MASK_LONG, GH: Math.max(16, Math.round(MASK_LONG / aspect)) };
+  }
+  return { GW: Math.max(16, Math.round(MASK_LONG * aspect)), GH: MASK_LONG };
+}
 
 interface Snapshot {
+  GW: number;
+  GH: number;
   mask: Uint8Array;
+  tone: Float32Array | null;
+  colors: Uint8Array | null;
 }
 
 export interface ThemePreset {
@@ -48,7 +79,12 @@ export const THEME_PRESETS: ThemePreset[] = [
 ];
 
 export interface ProjectData {
+  GW: number;
+  GH: number;
   mask: Uint8Array;
+  tone: Float32Array | null;
+  colors: Uint8Array | null;
+  canvasPresetId: string;
   generatorId: string;
   params: Record<string, ParamValues>;
   palette: Palette;
@@ -58,7 +94,14 @@ export interface ProjectData {
 
 interface AppState {
   // ----- document -----
+  GW: number;
+  GH: number;
+  canvasPresetId: string;
   mask: Uint8Array;
+  /** Ink darkness 0..1 per cell (tonal imports only). */
+  tone: Float32Array | null;
+  /** RGB per cell (tonal imports only). */
+  colors: Uint8Array | null;
   maskRev: number;
 
   // ----- drawing -----
@@ -97,6 +140,7 @@ interface AppState {
   fillAll(): void;
   newDocument(): void;
   loadProject(data: ProjectData): void;
+  setCanvas(presetId: string, GW: number, GH: number): void;
   setGenerator(id: string): void;
   setParam(key: string, value: ParamValues[string]): void;
   reroll(): void;
@@ -110,7 +154,7 @@ interface AppState {
   showToast(text: string, error?: boolean): void;
 }
 
-const MAX_UNDO = 60;
+const MAX_UNDO = 50;
 
 const defaultParams = (): Record<string, ParamValues> => {
   const out: Record<string, ParamValues> = {};
@@ -118,8 +162,21 @@ const defaultParams = (): Record<string, ParamValues> => {
   return out;
 };
 
+const takeSnapshot = (s: Pick<AppState, 'GW' | 'GH' | 'mask' | 'tone' | 'colors'>): Snapshot => ({
+  GW: s.GW,
+  GH: s.GH,
+  mask: new Uint8Array(s.mask),
+  tone: s.tone ? Float32Array.from(s.tone) : null,
+  colors: s.colors ? Uint8Array.from(s.colors) : null,
+});
+
 export const useStore = create<AppState>((set, get) => ({
-  mask: createMask(MASK_G),
+  GW: MASK_LONG,
+  GH: MASK_LONG,
+  canvasPresetId: '1:1',
+  mask: createMask(MASK_LONG, MASK_LONG),
+  tone: null,
+  colors: null,
   maskRev: 0,
 
   tool: 'brush',
@@ -148,39 +205,48 @@ export const useStore = create<AppState>((set, get) => ({
   bumpMask: () => set((s) => ({ maskRev: s.maskRev + 1 })),
 
   pushUndo: () => {
-    const { mask, undoStack } = get();
-    const next = [...undoStack, { mask: new Uint8Array(mask) }];
+    const s = get();
+    const next = [...s.undoStack, takeSnapshot(s)];
     if (next.length > MAX_UNDO) next.shift();
     set({ undoStack: next, redoStack: [] });
   },
 
   undo: () => {
-    const { undoStack, redoStack, mask } = get();
-    if (!undoStack.length) return;
-    const snap = undoStack[undoStack.length - 1];
+    const s = get();
+    if (!s.undoStack.length) return;
+    const snap = s.undoStack[s.undoStack.length - 1];
     set({
-      undoStack: undoStack.slice(0, -1),
-      redoStack: [...redoStack, { mask: new Uint8Array(mask) }],
+      undoStack: s.undoStack.slice(0, -1),
+      redoStack: [...s.redoStack, takeSnapshot(s)],
+      GW: snap.GW,
+      GH: snap.GH,
       mask: new Uint8Array(snap.mask),
-      maskRev: get().maskRev + 1,
+      tone: snap.tone ? Float32Array.from(snap.tone) : null,
+      colors: snap.colors ? Uint8Array.from(snap.colors) : null,
+      maskRev: s.maskRev + 1,
     });
   },
 
   redo: () => {
-    const { undoStack, redoStack, mask } = get();
-    if (!redoStack.length) return;
-    const snap = redoStack[redoStack.length - 1];
+    const s = get();
+    if (!s.redoStack.length) return;
+    const snap = s.redoStack[s.redoStack.length - 1];
     set({
-      redoStack: redoStack.slice(0, -1),
-      undoStack: [...undoStack, { mask: new Uint8Array(mask) }],
+      redoStack: s.redoStack.slice(0, -1),
+      undoStack: [...s.undoStack, takeSnapshot(s)],
+      GW: snap.GW,
+      GH: snap.GH,
       mask: new Uint8Array(snap.mask),
-      maskRev: get().maskRev + 1,
+      tone: snap.tone ? Float32Array.from(snap.tone) : null,
+      colors: snap.colors ? Uint8Array.from(snap.colors) : null,
+      maskRev: s.maskRev + 1,
     });
   },
 
   clearMask: () => {
     get().pushUndo();
-    set({ mask: createMask(MASK_G), maskRev: get().maskRev + 1 });
+    const { GW, GH } = get();
+    set({ mask: createMask(GW, GH), tone: null, colors: null, maskRev: get().maskRev + 1 });
   },
 
   fillAll: () => {
@@ -191,9 +257,14 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   newDocument: () =>
-    set({
-      mask: createMask(MASK_G),
-      maskRev: get().maskRev + 1,
+    set((s) => ({
+      GW: MASK_LONG,
+      GH: MASK_LONG,
+      canvasPresetId: '1:1',
+      mask: createMask(MASK_LONG, MASK_LONG),
+      tone: null,
+      colors: null,
+      maskRev: s.maskRev + 1,
       undoStack: [],
       redoStack: [],
       params: defaultParams(),
@@ -201,12 +272,17 @@ export const useStore = create<AppState>((set, get) => ({
       imported: null,
       preprocess: { ...DEFAULT_PREPROCESS },
       viewMode: 'draw',
-    }),
+    })),
 
   loadProject: (data) =>
-    set({
+    set((s) => ({
+      GW: data.GW,
+      GH: data.GH,
+      canvasPresetId: data.canvasPresetId,
       mask: data.mask,
-      maskRev: get().maskRev + 1,
+      tone: data.tone,
+      colors: data.colors,
+      maskRev: s.maskRev + 1,
       undoStack: [],
       redoStack: [],
       generatorId: data.generatorId,
@@ -216,7 +292,39 @@ export const useStore = create<AppState>((set, get) => ({
       seed: data.seed,
       imported: null,
       viewMode: 'preview',
-    }),
+    })),
+
+  setCanvas: (presetId, GW, GH) => {
+    const s = get();
+    if (GW === s.GW && GH === s.GH) {
+      set({ canvasPresetId: presetId });
+      return;
+    }
+    s.pushUndo();
+    if (s.imported) {
+      // re-extract the import so the image re-fits the new frame
+      const r = extractFromImage(s.imported, GW, GH, s.preprocess);
+      set({
+        canvasPresetId: presetId,
+        GW,
+        GH,
+        mask: r.mask,
+        tone: r.tone,
+        colors: r.colors,
+        maskRev: s.maskRev + 1,
+      });
+    } else {
+      set({
+        canvasPresetId: presetId,
+        GW,
+        GH,
+        mask: resampleMask(s.mask, s.GW, s.GH, GW, GH),
+        tone: null,
+        colors: null,
+        maskRev: s.maskRev + 1,
+      });
+    }
+  },
 
   setGenerator: (generatorId) => set({ generatorId }),
 
@@ -240,11 +348,14 @@ export const useStore = create<AppState>((set, get) => ({
   setPreprocess: (p) => set((s) => ({ preprocess: { ...s.preprocess, ...p } })),
 
   applyImportToMask: (pushUndo = true) => {
-    const { imported, preprocess } = get();
-    if (!imported) return;
-    if (pushUndo) get().pushUndo();
+    const s = get();
+    if (!s.imported) return;
+    if (pushUndo) s.pushUndo();
+    const r = extractFromImage(s.imported, s.GW, s.GH, s.preprocess);
     set({
-      mask: imageToMask(imported, MASK_G, preprocess),
+      mask: r.mask,
+      tone: r.tone,
+      colors: r.colors,
       maskRev: get().maskRev + 1,
     });
   },

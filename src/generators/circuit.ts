@@ -1,17 +1,19 @@
 /** Circuit generator — evolution of "Circuit Sketcher REV-D".
  *
  *  The proven core is kept: 45°-constrained stochastic trace growth inside
- *  the painted mask, with occupancy so traces never cross. Design changes:
+ *  the painted mask, with occupancy so traces never cross. Design changes
+ *  vs the reference implementation:
  *
- *   - the router works on its own grid, downsampled from the document mask;
- *     the "trace scale" control replaces the old grid-resolution setting
+ *   - the router works on its own square-cell grid, downsampled from the
+ *     document mask (supports any canvas aspect ratio)
  *   - ICs and discrete parts are placed procedurally in roomy interior
- *     regions (the manual "draw chip / parts" pens are gone)
- *   - clearance: committed traces dilate into a block field so parallel
- *     runs keep a consistent air gap
- *   - branching: traces fork bus-like children with a configurable chance
- *   - three-colour theme: primary = copper, secondary = pads/labels,
- *     chip bodies derived from the background */
+ *     regions
+ *   - pads/vias go through a circle registry with real distance checks:
+ *     the reference only guaranteed one *cell* per circle, so adjacent
+ *     endpoints could still overlap visually (ring outer edge = r + half
+ *     stroke ≈ 0.58·S per side > half a cell apart). Every circle now
+ *     reserves its true outer radius plus a clearance gap; colliding pads
+ *     demote to smaller vias or are skipped, keeping the layout clean. */
 
 import type { GeneratorDef, GeneratorContext, ParamValues, SvgDoc } from '../types';
 import { lighten, darken, luminance } from '../core/color';
@@ -29,17 +31,64 @@ interface Path {
 
 const SCALE_TO_G: Record<string, number> = { fine: 128, medium: 96, coarse: 64 };
 
+/** Registry of placed circles with true-radius collision checks. */
+class CircleRegistry {
+  private xs: number[] = [];
+  private ys: number[] = [];
+  private rs: number[] = [];
+  private buckets = new Map<number, number[]>();
+  constructor(
+    private cell: number,
+    private gap: number,
+  ) {}
+
+  private key(bx: number, by: number): number {
+    return by * 65536 + bx;
+  }
+
+  /** Would a circle at (x, y) with radius r overlap anything? */
+  collides(x: number, y: number, r: number): boolean {
+    const b = this.cell;
+    const bx = Math.floor(x / b);
+    const by = Math.floor(y / b);
+    const reach = Math.ceil((r + this.gap) / b) + 1;
+    for (let oy = -reach; oy <= reach; oy++) {
+      for (let ox = -reach; ox <= reach; ox++) {
+        const list = this.buckets.get(this.key(bx + ox, by + oy));
+        if (!list) continue;
+        for (const i of list) {
+          const min = r + this.rs[i] + this.gap;
+          if ((this.xs[i] - x) ** 2 + (this.ys[i] - y) ** 2 < min * min) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  add(x: number, y: number, r: number): void {
+    const i = this.xs.length;
+    this.xs.push(x);
+    this.ys.push(y);
+    this.rs.push(r);
+    const k = this.key(Math.floor(x / this.cell), Math.floor(y / this.cell));
+    const list = this.buckets.get(k);
+    if (list) list.push(i);
+    else this.buckets.set(k, [i]);
+  }
+}
+
 /** Carve procedural component zones (2 = chip, 3 = parts) into the route
  *  mask, using the distance field to find regions with enough room. */
 function placeComponents(
   route: Uint8Array,
-  G: number,
+  GW: number,
+  GH: number,
   chips: number,
   parts: number,
   rnd: () => number,
 ): void {
   if (chips <= 0 && parts <= 0) return;
-  const dist = distanceField(route, G);
+  const dist = distanceField(route, GW, GH);
 
   const candidates: number[] = [];
   for (let i = 0; i < route.length; i++) if (dist[i] >= 4.5) candidates.push(i);
@@ -47,8 +96,8 @@ function placeComponents(
   const clearAround = (cx: number, cy: number, r: number): boolean => {
     for (let y = cy - r; y <= cy + r; y++)
       for (let x = cx - r; x <= cx + r; x++) {
-        if (x < 0 || y < 0 || x >= G || y >= G) return false;
-        if (route[y * G + x] !== 1) return false;
+        if (x < 0 || y < 0 || x >= GW || y >= GH) return false;
+        if (route[y * GW + x] !== 1) return false;
       }
     return true;
   };
@@ -56,47 +105,43 @@ function placeComponents(
   let placedChips = 0;
   for (let a = 0; a < chips * 40 && placedChips < chips && candidates.length; a++) {
     const ci = candidates[(rnd() * candidates.length) | 0];
-    const cx = ci % G;
-    const cy = (ci / G) | 0;
-    const w = 2 + ((rnd() * 2) | 0); // half-extents 2..3 → 5..7 cells
+    const cx = ci % GW;
+    const cy = (ci / GW) | 0;
+    const w = 2 + ((rnd() * 2) | 0);
     const h = 2 + ((rnd() * 2) | 0);
     if (!clearAround(cx, cy, Math.max(w, h) + 1)) continue;
     for (let y = cy - h; y <= cy + h; y++)
-      for (let x = cx - w; x <= cx + w; x++) route[y * G + x] = 2;
+      for (let x = cx - w; x <= cx + w; x++) route[y * GW + x] = 2;
     placedChips++;
   }
 
-  // parts want a 3×3 block plus lead room
   const partCandidates: number[] = [];
   for (let i = 0; i < route.length; i++) if (route[i] === 1 && dist[i] >= 2.5) partCandidates.push(i);
   let placedParts = 0;
   for (let a = 0; a < parts * 30 && placedParts < parts && partCandidates.length; a++) {
     const ci = partCandidates[(rnd() * partCandidates.length) | 0];
-    const cx = ci % G;
-    const cy = (ci / G) | 0;
+    const cx = ci % GW;
+    const cy = (ci / GW) | 0;
     if (!clearAround(cx, cy, 2)) continue;
     for (let y = cy - 1; y <= cy + 1; y++)
-      for (let x = cx - 1; x <= cx + 1; x++) route[y * G + x] = 3;
+      for (let x = cx - 1; x <= cx + 1; x++) route[y * GW + x] = 3;
     placedParts++;
   }
 }
 
 function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
-  const { mask: srcMask, G: srcG, size, rnd, palette } = ctx;
+  const { mask: srcMask, GW: srcGW, GH: srcGH, W, H, rnd, palette } = ctx;
   const f = (n: number) => (Math.round(n * 100) / 100).toString();
 
-  // ----- route grid -----
-  const G = SCALE_TO_G[p.traceScale as string] ?? 96;
-  const S = size / G;
+  // ----- route grid (square cells, long side = scale preset) -----
+  const longG = SCALE_TO_G[p.traceScale as string] ?? 96;
+  const S = Math.max(W, H) / longG;
+  const G = Math.max(2, Math.round(W / S)); // columns
+  const GH = Math.max(2, Math.round(H / S)); // rows
   const c = (v: number) => v * S + S / 2;
-  const mask = downsampleMask(srcMask, srcG, G);
-  placeComponents(
-    mask,
-    G,
-    Math.round(p.chips as number),
-    Math.round(p.parts as number),
-    rnd,
-  );
+  const cy2 = (v: number) => v * S + S / 2;
+  const mask = downsampleMask(srcMask, srcGW, srcGH, G, GH);
+  placeComponents(mask, G, GH, Math.round(p.chips as number), Math.round(p.parts as number), rnd);
 
   const chipBody = luminance(palette.bg) > 128 ? darken(palette.bg, 0.78) : lighten(palette.bg, 0.07);
   const COL = {
@@ -117,25 +162,32 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
   const showFrame = p.frame as boolean;
   const strokeW = S * 0.34 * ((p.strokeWidth as number) / 100);
 
+  // ----- circle geometry: true outer radii incl. ring stroke -----
+  const padR = S * (padsFilled ? 0.58 : 0.41);
+  const viaR = S * (padsFilled ? 0.36 : 0.25);
+  const padOuter = padsFilled ? padR : padR + strokeW / 2;
+  const viaOuter = padsFilled ? viaR : viaR + strokeW * 0.65 * 0.5;
+  const circles = new CircleRegistry(S * 2, S * 0.18);
+
+  const idx = (x: number, y: number) => y * G + x;
   const routable = (x: number, y: number) =>
-    x >= 0 && y >= 0 && x < G && y < G && mask[y * G + x] === 1;
+    x >= 0 && y >= 0 && x < G && y < GH && mask[idx(x, y)] === 1;
 
   let area = 0;
   for (let i = 0; i < mask.length; i++) if (mask[i] === 1) area++;
 
-  const occ = new Uint8Array(G * G); // cells claimed by traces
-  const block = new Uint8Array(G * G); // clearance halo of committed traces
+  const occ = new Uint8Array(G * GH);
+  const block = new Uint8Array(G * GH);
   const free = (x: number, y: number) =>
-    routable(x, y) && occ[y * G + x] === 0 && block[y * G + x] === 0;
+    routable(x, y) && occ[idx(x, y)] === 0 && block[idx(x, y)] === 0;
 
   function canStep(x: number, y: number, d: number): boolean {
     const nx = x + DIRS[d][0];
     const ny = y + DIRS[d][1];
     if (!free(nx, ny)) return false;
     if (d % 2 === 1) {
-      // diagonal: forbid squeezing through a blocked corner pair
-      const a = !routable(nx, y) || occ[y * G + nx];
-      const b = !routable(x, ny) || occ[ny * G + x];
+      const a = !routable(nx, y) || occ[idx(nx, y)];
+      const b = !routable(x, ny) || occ[idx(x, ny)];
       if (a && b) return false;
     }
     return true;
@@ -146,7 +198,7 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
     let x = sx;
     let y = sy;
     const pts: [number, number][] = [[x, y]];
-    occ[y * G + x] = 1;
+    occ[idx(x, y)] = 1;
     const maxLen = Math.max(4, (lenBase * 0.5 + rnd() * lenBase) | 0);
     for (let step = 0; step < maxLen; step++) {
       const straightFirst = step < forceStraight || rnd() < straightness;
@@ -161,7 +213,7 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
           d = nd;
           x += DIRS[d][0];
           y += DIRS[d][1];
-          occ[y * G + x] = 1;
+          occ[idx(x, y)] = 1;
           pts.push([x, y]);
           moved = true;
           break;
@@ -173,11 +225,9 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
   }
 
   const undo = (pts: [number, number][]) => {
-    for (const [px, py] of pts) occ[py * G + px] = 0;
+    for (const [px, py] of pts) occ[idx(px, py)] = 0;
   };
 
-  /** Commit a path: with clearance on, dilate its cells into the block
-   *  field so later paths keep an air gap (endpoints stay connectable). */
   const commit = (pts: [number, number][]) => {
     if (!clearanceOn) return;
     for (let i = 1; i < pts.length - 1; i++) {
@@ -185,8 +235,8 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
       for (const [dx, dy] of DIRS) {
         const nx = px + dx;
         const ny = py + dy;
-        if (nx < 0 || ny < 0 || nx >= G || ny >= G) continue;
-        if (occ[ny * G + nx] === 0) block[ny * G + nx] = 1;
+        if (nx < 0 || ny < 0 || nx >= G || ny >= GH) continue;
+        if (occ[idx(nx, ny)] === 0) block[idx(nx, ny)] = 1;
       }
     }
   };
@@ -195,23 +245,23 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
   interface Chip { x0: number; y0: number; x1: number; y1: number; hPins: number[]; vPins: number[] }
   const chips: Chip[] = [];
   {
-    const seen = new Uint8Array(G * G);
-    for (let y = 0; y < G; y++) {
+    const seen = new Uint8Array(G * GH);
+    for (let y = 0; y < GH; y++) {
       for (let x = 0; x < G; x++) {
-        if (mask[y * G + x] !== 2 || seen[y * G + x]) continue;
+        if (mask[idx(x, y)] !== 2 || seen[idx(x, y)]) continue;
         let x0 = x, x1 = x, y0 = y, y1 = y;
         const stack: [number, number][] = [[x, y]];
-        seen[y * G + x] = 1;
+        seen[idx(x, y)] = 1;
         while (stack.length) {
-          const [cx, cy] = stack.pop()!;
+          const [cx, cyv] = stack.pop()!;
           x0 = Math.min(x0, cx); x1 = Math.max(x1, cx);
-          y0 = Math.min(y0, cy); y1 = Math.max(y1, cy);
+          y0 = Math.min(y0, cyv); y1 = Math.max(y1, cyv);
           for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
             const nx = cx + dx;
-            const ny = cy + dy;
-            if (nx < 0 || ny < 0 || nx >= G || ny >= G) continue;
-            if (mask[ny * G + nx] === 2 && !seen[ny * G + nx]) {
-              seen[ny * G + nx] = 1;
+            const ny = cyv + dy;
+            if (nx < 0 || ny < 0 || nx >= G || ny >= GH) continue;
+            if (mask[idx(nx, ny)] === 2 && !seen[idx(nx, ny)]) {
+              seen[idx(nx, ny)] = 1;
               stack.push([nx, ny]);
             }
           }
@@ -224,7 +274,6 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
   const paths: Path[] = [];
   const pins: [number, number, number, number][] = [];
 
-  // ----- pin traces: pitch 2, inset from corners -----
   const pinPositions = (a0: number, a1: number): number[] => {
     const a = a0 + 1;
     const b = a1 - 1;
@@ -253,12 +302,12 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
         }
         paths.push({ pts, pinStart: true });
         commit(pts);
-        const cx = px * S + S / 2;
-        const cy = py * S + S / 2;
-        if (side.dir === 6) pins.push([cx - pinW / 2, cy, pinW, side.edge() - cy]);
-        if (side.dir === 2) pins.push([cx - pinW / 2, side.edge(), pinW, cy - side.edge()]);
-        if (side.dir === 4) pins.push([cx, cy - pinW / 2, side.edge() - cx, pinW]);
-        if (side.dir === 0) pins.push([side.edge(), cy - pinW / 2, cx - side.edge(), pinW]);
+        const cx = c(px);
+        const cyv = cy2(py);
+        if (side.dir === 6) pins.push([cx - pinW / 2, cyv, pinW, side.edge() - cyv]);
+        if (side.dir === 2) pins.push([cx - pinW / 2, side.edge(), pinW, cyv - side.edge()]);
+        if (side.dir === 4) pins.push([cx, cyv - pinW / 2, side.edge() - cx, pinW]);
+        if (side.dir === 0) pins.push([side.edge(), cyv - pinW / 2, cx - side.edge(), pinW]);
       }
     }
   }
@@ -268,11 +317,11 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
   const parts: Part[] = [];
   {
     const partCells: [number, number][] = [];
-    for (let y = 0; y < G; y++)
-      for (let x = 0; x < G; x++) if (mask[y * G + x] === 3) partCells.push([x, y]);
-    const usedP = new Uint8Array(G * G);
+    for (let y = 0; y < GH; y++)
+      for (let x = 0; x < G; x++) if (mask[idx(x, y)] === 3) partCells.push([x, y]);
+    const usedP = new Uint8Array(G * GH);
     const partAt = (x: number, y: number) =>
-      x >= 0 && y >= 0 && x < G && y < G && mask[y * G + x] === 3 && !usedP[y * G + x];
+      x >= 0 && y >= 0 && x < G && y < GH && mask[idx(x, y)] === 3 && !usedP[idx(x, y)];
     const TYPES = ['res', 'cap', 'led'] as const;
     const tries = partCells.length * 2;
     for (let a = 0; a < tries && partCells.length; a++) {
@@ -284,14 +333,13 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
           for (let ox = -1; ox <= 1; ox++) {
             const ux = x + ox;
             const uy = y + oy;
-            if (ux >= 0 && uy >= 0 && ux < G && uy < G) usedP[uy * G + ux] = 1;
+            if (ux >= 0 && uy >= 0 && ux < G && uy < GH) usedP[idx(ux, uy)] = 1;
           }
         }
         parts.push({ x, y, dx, dy, type: TYPES[(rnd() * 3) | 0] });
         break;
       }
     }
-    // wire each part end into the copper zone
     for (const part of parts) {
       for (const s of [-1, 1]) {
         const endX = part.x + part.dx * s;
@@ -312,7 +360,7 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
 
   // ----- free traces -----
   const cells: [number, number][] = [];
-  for (let y = 0; y < G; y++) for (let x = 0; x < G; x++) if (routable(x, y)) cells.push([x, y]);
+  for (let y = 0; y < GH; y++) for (let x = 0; x < G; x++) if (routable(x, y)) cells.push([x, y]);
   const attempts = Math.min(2200, Math.round(area * 3 * densityMul));
   for (let a = 0; a < attempts && cells.length; a++) {
     const [sx, sy] = cells[(rnd() * cells.length) | 0];
@@ -325,7 +373,6 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
     paths.push({ pts, pinStart: false });
     commit(pts);
 
-    // ----- branching: fork a child trace from a random midpoint -----
     if (branchProb > 0 && pts.length >= 6 && rnd() < branchProb) {
       const [mx, my] = pts[2 + ((rnd() * (pts.length - 4)) | 0)];
       for (const [dx, dy] of DIRS) {
@@ -335,7 +382,7 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
         const bdir = DIRS.findIndex((dd) => dd[0] === dx && dd[1] === dy);
         const bpts = growPath(bx2, by2, bdir, 1);
         if (bpts.length >= 3) {
-          bpts.unshift([mx, my]); // join visually at the parent trace
+          bpts.unshift([mx, my]);
           paths.push({ pts: bpts, pinStart: true });
           commit(bpts);
         } else undo(bpts);
@@ -350,8 +397,8 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
     for (let i = 1; i < pts.length - 1; i++) {
       const [ax, ay] = o[o.length - 1];
       const [bx, by] = pts[i];
-      const [cx2, cy2] = pts[i + 1];
-      if ((bx - ax) * (cy2 - by) !== (by - ay) * (cx2 - bx)) o.push(pts[i]);
+      const [cx2, cyv2] = pts[i + 1];
+      if ((bx - ax) * (cyv2 - by) !== (by - ay) * (cx2 - bx)) o.push(pts[i]);
     }
     o.push(pts[pts.length - 1]);
     return o;
@@ -361,36 +408,67 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
   let padSvg = '';
   let viaSvg = '';
   let flowSvg = '';
-  const pad = (x: number, y: number) =>
-    `<circle class="padring" cx="${f(c(x))}" cy="${f(c(y))}" r="${f(S * (padsFilled ? 0.58 : 0.41))}"/>`;
-  const via = (x: number, y: number) =>
-    `<circle class="viaring" cx="${f(c(x))}" cy="${f(c(y))}" r="${f(S * (padsFilled ? 0.36 : 0.25))}"/>`;
+
+  const padMarkup = (x: number, y: number) =>
+    `<circle class="padring" cx="${f(c(x))}" cy="${f(cy2(y))}" r="${f(padR)}"/>`;
+  const viaMarkup = (x: number, y: number) =>
+    `<circle class="viaring" cx="${f(c(x))}" cy="${f(cy2(y))}" r="${f(viaR)}"/>`;
+
+  /** Register a circle unconditionally (component pads own their spot). */
+  const forcePad = (x: number, y: number) => {
+    circles.add(c(x), cy2(y), padOuter);
+    padSvg += padMarkup(x, y);
+  };
+
+  /** Try pad → via → nothing, with true-radius collision checks. */
+  const tryEndCircle = (x: number, y: number, preferPad: boolean) => {
+    const ux = c(x);
+    const uy = cy2(y);
+    if (preferPad && !circles.collides(ux, uy, padOuter)) {
+      circles.add(ux, uy, padOuter);
+      padSvg += padMarkup(x, y);
+      return;
+    }
+    if (!circles.collides(ux, uy, viaOuter)) {
+      circles.add(ux, uy, viaOuter);
+      viaSvg += viaMarkup(x, y);
+    }
+  };
+
+  // component pads first: they own their locations
+  for (const part of parts) {
+    forcePad(part.x - part.dx, part.y - part.dy);
+    forcePad(part.x + part.dx, part.y + part.dy);
+  }
 
   for (const { pts, pinStart, prepend } of paths) {
     const sp = simplify(pts);
     let dStr = prepend
-      ? `M${f(c(prepend[0]))} ${f(c(prepend[1]))}L${f(c(sp[0][0]))} ${f(c(sp[0][1]))}`
-      : `M${f(c(sp[0][0]))} ${f(c(sp[0][1]))}`;
-    for (let i = 1; i < sp.length; i++) dStr += `L${f(c(sp[i][0]))} ${f(c(sp[i][1]))}`;
+      ? `M${f(c(prepend[0]))} ${f(cy2(prepend[1]))}L${f(c(sp[0][0]))} ${f(cy2(sp[0][1]))}`
+      : `M${f(c(sp[0][0]))} ${f(cy2(sp[0][1]))}`;
+    for (let i = 1; i < sp.length; i++) dStr += `L${f(c(sp[i][0]))} ${f(cy2(sp[i][1]))}`;
     traceSvg += `<path class="trace" d="${dStr}"/>`;
     if (flowOn)
       flowSvg += `<path class="flow" d="${dStr}" style="animation-delay:-${(rnd() * 1.6).toFixed(2)}s"/>`;
 
     const [ex, ey] = pts[0];
     const [fx2, fy2] = pts[pts.length - 1];
-    if (!pinStart) padSvg += pad(ex, ey);
-    if (rnd() < 0.5) padSvg += pad(fx2, fy2);
-    else viaSvg += via(fx2, fy2);
+    if (!pinStart) tryEndCircle(ex, ey, true);
+    tryEndCircle(fx2, fy2, rnd() < 0.5);
   }
 
-  // scatter a few free-standing vias
+  // scatter a few free-standing vias (distance-checked like everything else)
   let scattered = 0;
-  for (let a = 0; a < 200 && scattered < paths.length / 3; a++) {
+  for (let a = 0; a < 220 && scattered < paths.length / 3; a++) {
     if (!cells.length) break;
     const [vx, vy] = cells[(rnd() * cells.length) | 0];
     if (!free(vx, vy)) continue;
-    occ[vy * G + vx] = 1;
-    viaSvg += via(vx, vy);
+    const ux = c(vx);
+    const uy = cy2(vy);
+    if (circles.collides(ux, uy, viaOuter)) continue;
+    occ[idx(vx, vy)] = 1;
+    circles.add(ux, uy, viaOuter);
+    viaSvg += viaMarkup(vx, vy);
     scattered++;
   }
 
@@ -398,25 +476,24 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
   let partSvg = '';
   for (const part of parts) {
     const cx = c(part.x);
-    const cy = c(part.y);
-    padSvg += pad(part.x - part.dx, part.y - part.dy) + pad(part.x + part.dx, part.y + part.dy);
-    let a = `<g${part.dy ? ` transform="rotate(90 ${f(cx)} ${f(cy)})"` : ''}>`;
+    const cyv = cy2(part.y);
+    let a = `<g${part.dy ? ` transform="rotate(90 ${f(cx)} ${f(cyv)})"` : ''}>`;
     const lead = (x1: number, x2: number) =>
-      `<line x1="${f(x1)}" y1="${f(cy)}" x2="${f(x2)}" y2="${f(cy)}" stroke="${COL.trace}" stroke-width="${f(strokeW)}"/>`;
+      `<line x1="${f(x1)}" y1="${f(cyv)}" x2="${f(x2)}" y2="${f(cyv)}" stroke="${COL.trace}" stroke-width="${f(strokeW)}"/>`;
     if (part.type === 'res') {
       a += lead(cx - S, cx + S);
-      a += `<rect x="${f(cx - S * 0.8)}" y="${f(cy - S * 0.42)}" width="${f(S * 1.6)}" height="${f(S * 0.84)}" rx="2" fill="${lighten(COL.chip, 0.3)}" stroke="${lighten(COL.chip, 0.55)}" stroke-width="0.7"/>`;
+      a += `<rect x="${f(cx - S * 0.8)}" y="${f(cyv - S * 0.42)}" width="${f(S * 1.6)}" height="${f(S * 0.84)}" rx="2" fill="${lighten(COL.chip, 0.3)}" stroke="${lighten(COL.chip, 0.55)}" stroke-width="0.7"/>`;
       for (const off of [-0.38, 0, 0.38])
-        a += `<line x1="${f(cx + S * off)}" y1="${f(cy - S * 0.42)}" x2="${f(cx + S * off)}" y2="${f(cy + S * 0.42)}" stroke="${COL.text}" stroke-width="1" opacity="0.85"/>`;
+        a += `<line x1="${f(cx + S * off)}" y1="${f(cyv - S * 0.42)}" x2="${f(cx + S * off)}" y2="${f(cyv + S * 0.42)}" stroke="${COL.text}" stroke-width="1" opacity="0.85"/>`;
     } else if (part.type === 'cap') {
       a += lead(cx - S, cx - S * 0.3) + lead(cx + S * 0.3, cx + S);
-      a += `<line x1="${f(cx - S * 0.16)}" y1="${f(cy - S * 0.6)}" x2="${f(cx - S * 0.16)}" y2="${f(cy + S * 0.6)}" stroke="${COL.pad}" stroke-width="1.8"/>`;
-      a += `<line x1="${f(cx + S * 0.16)}" y1="${f(cy - S * 0.6)}" x2="${f(cx + S * 0.16)}" y2="${f(cy + S * 0.6)}" stroke="${COL.pad}" stroke-width="1.8"/>`;
+      a += `<line x1="${f(cx - S * 0.16)}" y1="${f(cyv - S * 0.6)}" x2="${f(cx - S * 0.16)}" y2="${f(cyv + S * 0.6)}" stroke="${COL.pad}" stroke-width="1.8"/>`;
+      a += `<line x1="${f(cx + S * 0.16)}" y1="${f(cyv - S * 0.6)}" x2="${f(cx + S * 0.16)}" y2="${f(cyv + S * 0.6)}" stroke="${COL.pad}" stroke-width="1.8"/>`;
     } else {
       a += lead(cx - S, cx + S);
-      a += `<circle class="ledglow" cx="${f(cx)}" cy="${f(cy)}" r="${f(S * 1.05)}" fill="${lighten(COL.trace, 0.5)}"/>`;
-      a += `<circle cx="${f(cx)}" cy="${f(cy)}" r="${f(S * 0.55)}" fill="${lighten(COL.trace, 0.45)}" stroke="${COL.pad}" stroke-width="0.8"/>`;
-      a += `<circle cx="${f(cx - S * 0.15)}" cy="${f(cy - S * 0.15)}" r="${f(S * 0.16)}" fill="#ffffff" fill-opacity="0.85"/>`;
+      a += `<circle class="ledglow" cx="${f(cx)}" cy="${f(cyv)}" r="${f(S * 1.05)}" fill="${lighten(COL.trace, 0.5)}"/>`;
+      a += `<circle cx="${f(cx)}" cy="${f(cyv)}" r="${f(S * 0.55)}" fill="${lighten(COL.trace, 0.45)}" stroke="${COL.pad}" stroke-width="0.8"/>`;
+      a += `<circle cx="${f(cx - S * 0.15)}" cy="${f(cyv - S * 0.15)}" r="${f(S * 0.16)}" fill="#ffffff" fill-opacity="0.85"/>`;
     }
     partSvg += a + '</g>';
   }
@@ -460,14 +537,13 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
     pinSvg += `<rect x="${f(px)}" y="${f(py)}" width="${f(pw)}" height="${f(ph)}" fill="${COL.pad}"/>`;
   }
 
-  const W = size;
   const fid = (x: number, y: number) =>
     `<circle cx="${x}" cy="${y}" r="8" fill="none" stroke="${COL.pad}" stroke-width="1.6" opacity="0.5"/>` +
     `<circle cx="${x}" cy="${y}" r="2.4" fill="${COL.pad}" opacity="0.5"/>`;
   const decoration = showFrame
-    ? `<rect x="10" y="10" width="${W - 20}" height="${W - 20}" fill="none" stroke="${COL.pad}" stroke-width="1.4" opacity="0.28"/>` +
-      `${fid(28, 28)}${fid(W - 28, 28)}${fid(28, W - 28)}${fid(W - 28, W - 28)}` +
-      `<text x="${W - 24}" y="${W - 22}" text-anchor="end" font-family="monospace" font-size="14" fill="${COL.pad}" opacity="0.5">GRIDFORGE REV-E</text>`
+    ? `<rect x="10" y="10" width="${W - 20}" height="${H - 20}" fill="none" stroke="${COL.pad}" stroke-width="1.4" opacity="0.28"/>` +
+      `${fid(28, 28)}${fid(W - 28, 28)}${fid(28, H - 28)}${fid(W - 28, H - 28)}` +
+      `<text x="${W - 24}" y="${H - 22}" text-anchor="end" font-family="monospace" font-size="14" fill="${COL.pad}" opacity="0.5">GRIDFORGE REV-E</text>`
     : '';
 
   const css = `
@@ -489,7 +565,7 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
 
   const body = `${decoration}<g>${traceSvg}</g><g>${flowSvg}</g><g class="pads">${viaSvg}${padSvg}</g>${partSvg}${pinSvg}${chipSvg}`;
 
-  return { size, body, css };
+  return { width: W, height: H, body, css };
 }
 
 export const circuitGenerator: GeneratorDef = {

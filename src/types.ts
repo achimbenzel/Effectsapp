@@ -6,8 +6,9 @@ export type Zone = 0 | 1 | 2 | 3 | 4;
 
 /** A fully generated vector document, ready to be wrapped in an <svg> root. */
 export interface SvgDoc {
-  /** Document size in SVG user units (square). */
-  size: number;
+  /** Document width/height in SVG user units. */
+  width: number;
+  height: number;
   /** Inner markup (no <svg> root, no background rect). */
   body: string;
   /** Optional <style> content scoped to the document. */
@@ -26,14 +27,20 @@ export interface Palette {
 
 /** Read-only context handed to a generator run. */
 export interface GeneratorContext {
-  /** Ink mask, row-major, length G*G. */
+  /** Ink mask, row-major, length GW*GH. */
   mask: Uint8Array;
-  /** Mask grid dimension. */
-  G: number;
+  /** Mask grid dimensions (cells). */
+  GW: number;
+  GH: number;
   /** SVG units per mask cell. */
   S: number;
-  /** Document size in SVG units (G*S). */
-  size: number;
+  /** Document size in SVG units (GW*S × GH*S). */
+  W: number;
+  H: number;
+  /** Optional tonal field from image import: ink darkness 0..1 per cell. */
+  tone: Float32Array | null;
+  /** Optional colour field from image import: RGB triplets per cell. */
+  colors: Uint8Array | null;
   /** Seeded PRNG in [0,1). */
   rnd: () => number;
   palette: Palette;

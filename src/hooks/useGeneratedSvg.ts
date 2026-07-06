@@ -3,14 +3,12 @@
  *  without regenerating on every pointer-move mid-stroke. */
 
 import { useEffect, useRef, useState } from 'react';
-import { useStore, MASK_G } from '../state/store';
+import { useStore, CELL } from '../state/store';
 import { getGenerator } from '../generators/registry';
 import { mulberry32 } from '../core/rng';
 import { isEmpty } from '../mask/maskOps';
 import { wrapSvg } from '../exporters/svg';
 
-/** Document edge length in SVG units. */
-export const DOC_SIZE = 1024;
 const DEBOUNCE_MS = 90;
 
 export interface GeneratedResult {
@@ -23,7 +21,8 @@ export interface GeneratedResult {
 /** Build the current document once — shared by preview and export. */
 export function generateCurrent(opts?: { background?: string | null; padding?: number }): {
   svg: string;
-  size: number;
+  width: number;
+  height: number;
 } | null {
   const s = useStore.getState();
   if (isEmpty(s.mask)) return null;
@@ -31,9 +30,13 @@ export function generateCurrent(opts?: { background?: string | null; padding?: n
   const doc = gen.generate(
     {
       mask: s.mask,
-      G: MASK_G,
-      S: DOC_SIZE / MASK_G,
-      size: DOC_SIZE,
+      GW: s.GW,
+      GH: s.GH,
+      S: CELL,
+      W: s.GW * CELL,
+      H: s.GH * CELL,
+      tone: s.tone,
+      colors: s.colors,
       rnd: mulberry32(s.seed),
       palette: s.palette,
     },
@@ -43,7 +46,7 @@ export function generateCurrent(opts?: { background?: string | null; padding?: n
     background: opts?.background !== undefined ? opts.background : s.bgOn ? s.palette.bg : null,
     padding: opts?.padding ?? 0,
   });
-  return { svg, size: doc.size };
+  return { svg, width: doc.width, height: doc.height };
 }
 
 export function useGeneratedSvg(): GeneratedResult {

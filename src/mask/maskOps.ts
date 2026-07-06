@@ -1,4 +1,4 @@
-/** Pure operations on the zone mask (Uint8Array, row-major G×G).
+/** Pure operations on the ink mask (Uint8Array, row-major GW×GH).
  *  The mask is the single source of truth that every generator consumes:
  *  drawing paints into it, image import rasterises into it. */
 
@@ -6,18 +6,24 @@ import type { Zone } from '../types';
 
 export type MirrorMode = 'off' | 'h' | 'v' | '4';
 
-export function createMask(G: number): Uint8Array {
-  return new Uint8Array(G * G);
+export function createMask(GW: number, GH: number): Uint8Array {
+  return new Uint8Array(GW * GH);
 }
 
-/** Nearest-neighbour rescale used when switching grid resolution. */
-export function resampleMask(mask: Uint8Array, oldG: number, newG: number): Uint8Array {
-  const out = new Uint8Array(newG * newG);
-  for (let y = 0; y < newG; y++) {
-    const oy = Math.min(oldG - 1, Math.floor((y * oldG) / newG));
-    for (let x = 0; x < newG; x++) {
-      const ox = Math.min(oldG - 1, Math.floor((x * oldG) / newG));
-      out[y * newG + x] = mask[oy * oldG + ox];
+/** Nearest-neighbour rescale used when the canvas format changes. */
+export function resampleMask(
+  mask: Uint8Array,
+  w0: number,
+  h0: number,
+  w1: number,
+  h1: number,
+): Uint8Array {
+  const out = new Uint8Array(w1 * h1);
+  for (let y = 0; y < h1; y++) {
+    const oy = Math.min(h0 - 1, Math.floor((y * h0) / h1));
+    for (let x = 0; x < w1; x++) {
+      const ox = Math.min(w0 - 1, Math.floor((x * w0) / w1));
+      out[y * w1 + x] = mask[oy * w0 + ox];
     }
   }
   return out;
@@ -26,7 +32,8 @@ export function resampleMask(mask: Uint8Array, oldG: number, newG: number): Uint
 /** Paint a square brush stamp (with optional mirroring) at cell (x, y). */
 export function stamp(
   mask: Uint8Array,
-  G: number,
+  GW: number,
+  GH: number,
   x: number,
   y: number,
   brush: number,
@@ -35,17 +42,17 @@ export function stamp(
 ): void {
   const o = Math.floor(brush / 2);
   const put = (cx: number, cy: number) => {
-    if (cx < 0 || cy < 0 || cx >= G || cy >= G) return;
-    mask[cy * G + cx] = value;
+    if (cx < 0 || cy < 0 || cx >= GW || cy >= GH) return;
+    mask[cy * GW + cx] = value;
   };
   for (let dy = 0; dy < brush; dy++) {
     for (let dx = 0; dx < brush; dx++) {
       const cx = x + dx - o;
       const cy = y + dy - o;
       put(cx, cy);
-      if (mirror === 'h' || mirror === '4') put(G - 1 - cx, cy);
-      if (mirror === 'v' || mirror === '4') put(cx, G - 1 - cy);
-      if (mirror === '4') put(G - 1 - cx, G - 1 - cy);
+      if (mirror === 'h' || mirror === '4') put(GW - 1 - cx, cy);
+      if (mirror === 'v' || mirror === '4') put(cx, GH - 1 - cy);
+      if (mirror === '4') put(GW - 1 - cx, GH - 1 - cy);
     }
   }
 }
@@ -53,7 +60,8 @@ export function stamp(
 /** Bresenham stroke between two cells so fast pointer moves stay solid. */
 export function stampLine(
   mask: Uint8Array,
-  G: number,
+  GW: number,
+  GH: number,
   x0: number,
   y0: number,
   x1: number,
@@ -68,7 +76,7 @@ export function stampLine(
   const sy = y0 < y1 ? 1 : -1;
   let err = dx + dy;
   for (;;) {
-    stamp(mask, G, x0, y0, brush, value, mirror);
+    stamp(mask, GW, GH, x0, y0, brush, value, mirror);
     if (x0 === x1 && y0 === y1) break;
     const e2 = 2 * err;
     if (e2 >= dy) {
@@ -92,20 +100,18 @@ export function isEmpty(mask: Uint8Array): boolean {
   return true;
 }
 
-/** Count of painted cells. */
-export function coverage(mask: Uint8Array): number {
-  let n = 0;
-  for (let i = 0; i < mask.length; i++) if (mask[i] !== 0) n++;
-  return n;
-}
-
 /** Remove isolated specks: a painted cell with fewer than `minNeighbors`
  *  painted 8-neighbours is cleared. One pass; call repeatedly if needed. */
-export function despeckle(mask: Uint8Array, G: number, minNeighbors = 1): Uint8Array {
+export function despeckle(
+  mask: Uint8Array,
+  GW: number,
+  GH: number,
+  minNeighbors = 1,
+): Uint8Array {
   const out = new Uint8Array(mask);
-  for (let y = 0; y < G; y++) {
-    for (let x = 0; x < G; x++) {
-      const v = mask[y * G + x];
+  for (let y = 0; y < GH; y++) {
+    for (let x = 0; x < GW; x++) {
+      const v = mask[y * GW + x];
       if (!v) continue;
       let n = 0;
       for (let dy = -1; dy <= 1; dy++) {
@@ -113,31 +119,39 @@ export function despeckle(mask: Uint8Array, G: number, minNeighbors = 1): Uint8A
           if (!dx && !dy) continue;
           const nx = x + dx;
           const ny = y + dy;
-          if (nx < 0 || ny < 0 || nx >= G || ny >= G) continue;
-          if (mask[ny * G + nx]) n++;
+          if (nx < 0 || ny < 0 || nx >= GW || ny >= GH) continue;
+          if (mask[ny * GW + nx]) n++;
         }
       }
-      if (n < minNeighbors) out[y * G + x] = 0;
+      if (n < minNeighbors) out[y * GW + x] = 0;
     }
   }
   return out;
 }
 
-/** Render the mask into an ImageData for the drawing canvas preview. */
+/** Render the mask into an ImageData for the drawing canvas preview.
+ *  When a colour field exists, cells take their sampled image colour. */
 export function maskToImageData(
   mask: Uint8Array,
-  G: number,
+  GW: number,
+  GH: number,
   ink: [number, number, number],
+  colors: Uint8Array | null = null,
 ): ImageData {
-  const img = new ImageData(G, G);
+  const img = new ImageData(GW, GH);
   const d = img.data;
-  const [r, g, b] = ink;
   for (let i = 0; i < mask.length; i++) {
     if (!mask[i]) continue;
     const o = i * 4;
-    d[o] = r;
-    d[o + 1] = g;
-    d[o + 2] = b;
+    if (colors) {
+      d[o] = colors[i * 3];
+      d[o + 1] = colors[i * 3 + 1];
+      d[o + 2] = colors[i * 3 + 2];
+    } else {
+      d[o] = ink[0];
+      d[o + 1] = ink[1];
+      d[o + 2] = ink[2];
+    }
     d[o + 3] = 255;
   }
   return img;

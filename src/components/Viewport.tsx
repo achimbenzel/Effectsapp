@@ -1,9 +1,9 @@
 /** Center workspace: zoom/pan stage containing the drawing document and the
- *  generated result.
+ *  generated result. Supports any canvas aspect ratio.
  *
- *  Crisp rendering: the document element is laid out at `size × scale`
- *  pixels (no CSS scale transform), so inline SVG re-renders as true
- *  vectors at every zoom level instead of being rasterised and stretched.
+ *  Crisp rendering: the document element is laid out at its zoomed pixel
+ *  size (no CSS scale transform), so inline SVG re-renders as true vectors
+ *  at every zoom level.
  *
  *  Interaction model:
  *   - draw mode:  left-drag paints, space/middle-drag pans
@@ -13,14 +13,15 @@
  *  propagation), so UI clicks can never be swallowed by pan/draw capture. */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useStore, MASK_G } from '../state/store';
+import { useStore } from '../state/store';
 import type { GeneratedResult } from '../hooks/useGeneratedSvg';
 import { stampLine, maskToImageData, isEmpty } from '../mask/maskOps';
 import { parseHex } from '../core/color';
 import { decodeImageFile } from '../raster/preprocess';
 import { IconFit, IconZoomIn, IconZoomOut, IconLogo } from './icons';
 
-const DOC = 512; // document edge in stage pixels at scale 1
+/** Stage pixels per mask cell at scale 1 (long side = 512 px). */
+const CELL_PX = 2;
 
 interface View {
   scale: number;
@@ -44,6 +45,8 @@ export function Viewport({ generated }: { generated: GeneratedResult }) {
 
   const viewMode = useStore((s) => s.viewMode);
   const maskRev = useStore((s) => s.maskRev);
+  const GW = useStore((s) => s.GW);
+  const GH = useStore((s) => s.GH);
   const primary = useStore((s) => s.palette.primary);
   const bgOn = useStore((s) => s.bgOn);
   const maskEmpty = useStore((s) => {
@@ -51,15 +54,18 @@ export function Viewport({ generated }: { generated: GeneratedResult }) {
     return isEmpty(s.mask);
   });
 
+  const docW = GW * CELL_PX; // stage px at scale 1
+  const docH = GH * CELL_PX;
+
   // ---------- fit & zoom ----------
   const fit = useCallback(() => {
     const el = rootRef.current;
     if (!el) return;
     const w = el.clientWidth;
     const h = el.clientHeight;
-    const scale = Math.max(0.05, Math.min((w - 96) / DOC, (h - 96) / DOC));
-    setView({ scale, tx: (w - DOC * scale) / 2, ty: (h - DOC * scale) / 2 });
-  }, []);
+    const scale = Math.max(0.05, Math.min((w - 96) / docW, (h - 96) / docH));
+    setView({ scale, tx: (w - docW * scale) / 2, ty: (h - docH * scale) / 2 });
+  }, [docW, docH]);
 
   useEffect(() => {
     fit();
@@ -118,12 +124,12 @@ export function Viewport({ generated }: { generated: GeneratedResult }) {
     const cv = canvasRef.current;
     if (!cv) return;
     const s = useStore.getState();
-    cv.width = MASK_G;
-    cv.height = MASK_G;
-    const ink = parseHex(s.palette.primary) ?? [255, 255, 255];
+    cv.width = s.GW;
+    cv.height = s.GH;
+    const ink = (parseHex(s.palette.primary) ?? [255, 255, 255]) as [number, number, number];
     const ctx = cv.getContext('2d')!;
-    ctx.putImageData(maskToImageData(s.mask, MASK_G, ink as [number, number, number]), 0, 0);
-  }, [maskRev, primary]);
+    ctx.putImageData(maskToImageData(s.mask, s.GW, s.GH, ink, s.colors), 0, 0);
+  }, [maskRev, GW, GH, primary]);
 
   // ---------- pointer: draw & pan ----------
   const cellOf = (e: React.PointerEvent): { x: number; y: number } | null => {
@@ -132,9 +138,9 @@ export function Viewport({ generated }: { generated: GeneratedResult }) {
     const r = el.getBoundingClientRect();
     const dx = (e.clientX - r.left - view.tx) / view.scale;
     const dy = (e.clientY - r.top - view.ty) / view.scale;
-    const x = Math.floor((dx / DOC) * MASK_G);
-    const y = Math.floor((dy / DOC) * MASK_G);
-    if (x < 0 || y < 0 || x >= MASK_G || y >= MASK_G) return null;
+    const x = Math.floor(dx / CELL_PX);
+    const y = Math.floor(dy / CELL_PX);
+    if (x < 0 || y < 0 || x >= GW || y >= GH) return null;
     return { x, y };
   };
 
@@ -142,7 +148,8 @@ export function Viewport({ generated }: { generated: GeneratedResult }) {
     const s = useStore.getState();
     stampLine(
       s.mask,
-      MASK_G,
+      s.GW,
+      s.GH,
       from.x,
       from.y,
       to.x,
@@ -157,7 +164,6 @@ export function Viewport({ generated }: { generated: GeneratedResult }) {
   const onPointerDown = (e: React.PointerEvent) => {
     const el = rootRef.current;
     if (!el) return;
-    // never hijack clicks on floating UI
     if ((e.target as HTMLElement).closest('.vp-float')) return;
     const wantPan =
       e.button === 1 || spaceRef.current || (e.button === 0 && viewMode === 'preview');
@@ -220,7 +226,6 @@ export function Viewport({ generated }: { generated: GeneratedResult }) {
 
   const pct = Math.round(view.scale * 100);
   const preview = viewMode === 'preview';
-  const docPx = DOC * view.scale;
 
   return (
     <div
@@ -242,7 +247,7 @@ export function Viewport({ generated }: { generated: GeneratedResult }) {
       <div className="vp-stage" style={{ transform: `translate(${view.tx}px, ${view.ty}px)` }}>
         <div
           className={`vp-doc ${preview ? (bgOn ? '' : 'vp-doc--checker') : 'vp-doc--grid'}`}
-          style={{ width: docPx, height: docPx }}
+          style={{ width: docW * view.scale, height: docH * view.scale }}
         >
           <canvas
             ref={canvasRef}

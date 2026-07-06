@@ -1,23 +1,24 @@
-/** Application header: brand, file actions (new / open / save / export)
- *  and history. Tool-specific controls live in the canvas toolbar. */
+/** Application header: brand, file actions (new / open / save), history
+ *  and the settings menu. Tool-specific controls live in the canvas
+ *  toolbar; export lives in the sidebar workflow. */
 
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useStore } from '../state/store';
 import { saveProject, openProject } from '../state/project';
-import { generateCurrent } from '../hooks/useGeneratedSvg';
-import { downloadSvg } from '../exporters/svg';
+import { SettingsModal } from './SettingsModal';
 import {
   IconUndo,
   IconRedo,
   IconNew,
   IconOpen,
   IconSave,
-  IconExport,
+  IconSettings,
   IconLogo,
 } from './icons';
 
 export function TopBar() {
   const openRef = useRef<HTMLInputElement>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const canUndo = useStore((s) => s.undoStack.length > 0);
@@ -40,17 +41,6 @@ export function TopBar() {
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Could not open file', true);
     }
-  };
-
-  const onExport = () => {
-    const s = useStore.getState();
-    const out = generateCurrent();
-    if (!out) {
-      showToast('Nothing to export yet — draw or import first', true);
-      return;
-    }
-    downloadSvg(out.svg, `gridforge-${s.generatorId}-${s.seed.toString(16)}.svg`);
-    showToast('SVG exported');
   };
 
   return (
@@ -101,10 +91,15 @@ export function TopBar() {
 
       <span className="topbar-spacer" />
 
-      <button className="btn btn--sm btn--teal" onClick={onExport} title="Export SVG">
-        <IconExport size={12} />
-        Export
+      <button
+        className="iconbtn"
+        title="Settings — UI theme & custom CSS"
+        onClick={() => setSettingsOpen(true)}
+      >
+        <IconSettings size={17} />
       </button>
+
+      {settingsOpen ? <SettingsModal onClose={() => setSettingsOpen(false)} /> : null}
     </header>
   );
 }

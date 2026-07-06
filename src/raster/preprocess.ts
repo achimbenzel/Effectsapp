@@ -1,10 +1,14 @@
-/** Image import pipeline: source bitmap → greyscale field → zone mask.
+/** Image import pipeline: source bitmap → greyscale field → ink mask.
  *
- *  The pipeline works on a float luminance buffer at mask resolution so the
- *  individual stages stay cheap and composable:
+ *  Two extraction modes:
  *
- *    fit → [brightness/contrast] → [blur] → [edge detect] →
- *    threshold (+invert) → [despeckle] → mask
+ *  - "shape": binary threshold — for logos, line art, silhouettes.
+ *  - "tone":  the processed luminance is Floyd–Steinberg dithered into the
+ *             mask, so ink *density* encodes brightness. Alongside the mask
+ *             a smooth tone field (darkness 0..1) and a colour field are
+ *             kept, letting generators scale marks by image value and pick
+ *             up the source colours — the imported image stays recognisable.
+ *  - "auto":  picks tone when the image has meaningful mid-tones.
  *
  *  Background handling: images with real transparency use their alpha as
  *  the silhouette; opaque images can drop a flat background automatically
@@ -12,18 +16,22 @@
 
 import { despeckle } from '../mask/maskOps';
 
+export type ImportMode = 'auto' | 'shape' | 'tone';
+
 export interface PreprocessParams {
+  mode: ImportMode;
   brightness: number; // -100..100
   contrast: number; // -100..100
   blur: number; // 0..4 box-blur radius (cells)
   edgeDetect: boolean; // Sobel magnitude instead of luminance
-  threshold: number; // 0..255 cut point
+  threshold: number; // 0..255 cut point (shape mode)
   invert: boolean;
   autoBackground: boolean; // drop flat border-colour background
-  denoise: number; // 0..3 despeckle passes
+  denoise: number; // 0..3 despeckle passes (shape mode)
 }
 
 export const DEFAULT_PREPROCESS: PreprocessParams = {
+  mode: 'auto',
   brightness: 0,
   contrast: 0,
   blur: 0,
@@ -41,6 +49,16 @@ export interface ImportedImage {
   height: number;
 }
 
+export interface ExtractResult {
+  mask: Uint8Array;
+  /** Ink darkness 0..1 per cell (tone mode only). */
+  tone: Float32Array | null;
+  /** RGB triplets per cell (tone mode only). */
+  colors: Uint8Array | null;
+  /** Which mode actually ran (resolves 'auto'). */
+  resolvedMode: 'shape' | 'tone';
+}
+
 /** Decode a File (PNG/JPG/SVG) into an ImageBitmap. SVG files are given an
  *  explicit raster size so vector art imports crisply. */
 export async function decodeImageFile(file: File): Promise<ImportedImage> {
@@ -55,7 +73,6 @@ export async function decodeImageFile(file: File): Promise<ImportedImage> {
         img.onerror = () => reject(new Error('Could not decode SVG'));
         img.src = url;
       });
-      // Rasterise at a generous fixed size; the mask grid resamples anyway.
       const R = 1024;
       const cv = document.createElement('canvas');
       const ar = (img.width || 1) / (img.height || 1);
@@ -73,24 +90,23 @@ export async function decodeImageFile(file: File): Promise<ImportedImage> {
   return { bitmap, name: file.name, width: bitmap.width, height: bitmap.height };
 }
 
-/** Fit-draw the bitmap centred onto a G×G grid and return its RGBA data. */
-function rasterize(bitmap: ImageBitmap, G: number): ImageData {
+/** Fit-draw the bitmap centred onto a GW×GH grid and return its RGBA data. */
+function rasterize(bitmap: ImageBitmap, GW: number, GH: number): ImageData {
   const cv = document.createElement('canvas');
-  cv.width = G;
-  cv.height = G;
+  cv.width = GW;
+  cv.height = GH;
   const cx = cv.getContext('2d', { willReadFrequently: true })!;
-  const sc = Math.min(G / bitmap.width, G / bitmap.height);
+  const sc = Math.min(GW / bitmap.width, GH / bitmap.height);
   const w = bitmap.width * sc;
   const h = bitmap.height * sc;
   cx.imageSmoothingQuality = 'high';
-  cx.drawImage(bitmap, (G - w) / 2, (G - h) / 2, w, h);
-  return cx.getImageData(0, 0, G, G);
+  cx.drawImage(bitmap, (GW - w) / 2, (GH - h) / 2, w, h);
+  return cx.getImageData(0, 0, GW, GH);
 }
 
 /** Does the drawn region contain meaningful transparency? */
 function hasAlpha(data: Uint8ClampedArray): boolean {
   for (let i = 3; i < data.length; i += 4) if (data[i] > 10 && data[i] < 245) return true;
-  // fully-transparent padding around a fully-opaque image also counts
   let sawOpaque = false;
   let sawClear = false;
   for (let i = 3; i < data.length; i += 4) {
@@ -128,75 +144,102 @@ function borderColor(img: ImageData): [number, number, number] {
   return [r / n, g / n, b / n];
 }
 
-function boxBlur(src: Float32Array, G: number, radius: number): Float32Array {
+function boxBlur(src: Float32Array, W: number, H: number, radius: number): Float32Array {
   if (radius <= 0) return src;
-  const tmp = new Float32Array(G * G);
-  const out = new Float32Array(G * G);
+  const tmp = new Float32Array(W * H);
+  const out = new Float32Array(W * H);
   const win = radius * 2 + 1;
-  // horizontal
-  for (let y = 0; y < G; y++) {
+  for (let y = 0; y < H; y++) {
     let acc = 0;
-    for (let x = -radius; x <= radius; x++) acc += src[y * G + Math.max(0, Math.min(G - 1, x))];
-    for (let x = 0; x < G; x++) {
-      tmp[y * G + x] = acc / win;
-      const drop = Math.max(0, Math.min(G - 1, x - radius));
-      const addI = Math.max(0, Math.min(G - 1, x + radius + 1));
-      acc += src[y * G + addI] - src[y * G + drop];
+    for (let x = -radius; x <= radius; x++) acc += src[y * W + Math.max(0, Math.min(W - 1, x))];
+    for (let x = 0; x < W; x++) {
+      tmp[y * W + x] = acc / win;
+      const drop = Math.max(0, Math.min(W - 1, x - radius));
+      const addI = Math.max(0, Math.min(W - 1, x + radius + 1));
+      acc += src[y * W + addI] - src[y * W + drop];
     }
   }
-  // vertical
-  for (let x = 0; x < G; x++) {
+  for (let x = 0; x < W; x++) {
     let acc = 0;
-    for (let y = -radius; y <= radius; y++) acc += tmp[Math.max(0, Math.min(G - 1, y)) * G + x];
-    for (let y = 0; y < G; y++) {
-      out[y * G + x] = acc / win;
-      const drop = Math.max(0, Math.min(G - 1, y - radius));
-      const addI = Math.max(0, Math.min(G - 1, y + radius + 1));
-      acc += tmp[addI * G + x] - tmp[drop * G + x];
+    for (let y = -radius; y <= radius; y++) acc += tmp[Math.max(0, Math.min(H - 1, y)) * W + x];
+    for (let y = 0; y < H; y++) {
+      out[y * W + x] = acc / win;
+      const drop = Math.max(0, Math.min(H - 1, y - radius));
+      const addI = Math.max(0, Math.min(H - 1, y + radius + 1));
+      acc += tmp[addI * W + x] - tmp[drop * W + x];
     }
   }
   return out;
 }
 
-function sobel(src: Float32Array, G: number): Float32Array {
-  const out = new Float32Array(G * G);
+function sobel(src: Float32Array, W: number, H: number): Float32Array {
+  const out = new Float32Array(W * H);
   const at = (x: number, y: number) =>
-    src[Math.max(0, Math.min(G - 1, y)) * G + Math.max(0, Math.min(G - 1, x))];
-  for (let y = 0; y < G; y++) {
-    for (let x = 0; x < G; x++) {
+    src[Math.max(0, Math.min(H - 1, y)) * W + Math.max(0, Math.min(W - 1, x))];
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
       const gx =
         -at(x - 1, y - 1) - 2 * at(x - 1, y) - at(x - 1, y + 1) +
         at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1);
       const gy =
         -at(x - 1, y - 1) - 2 * at(x, y - 1) - at(x + 1, y - 1) +
         at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1);
-      out[y * G + x] = Math.min(255, Math.hypot(gx, gy));
+      out[y * W + x] = Math.min(255, Math.hypot(gx, gy));
     }
   }
   return out;
 }
 
-/** Full pipeline: imported bitmap → zone mask (all artwork lands in zone 1). */
-export function imageToMask(image: ImportedImage, G: number, p: PreprocessParams): Uint8Array {
-  const img = rasterize(image.bitmap, G);
+/** Serpentine Floyd–Steinberg dither of a darkness field (0..1) → binary. */
+function ditherFS(darkness: Float32Array, W: number, H: number): Uint8Array {
+  const buf = Float32Array.from(darkness);
+  const out = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) {
+    const ltr = (y & 1) === 0;
+    for (let i = 0; i < W; i++) {
+      const x = ltr ? i : W - 1 - i;
+      const idx = y * W + x;
+      const old = buf[idx];
+      const nv = old >= 0.5 ? 1 : 0;
+      out[idx] = nv;
+      const err = old - nv;
+      const push = (dx: number, dy: number, wgt: number) => {
+        const nx = x + (ltr ? dx : -dx);
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) return;
+        buf[ny * W + nx] += err * wgt;
+      };
+      push(1, 0, 7 / 16);
+      push(-1, 1, 3 / 16);
+      push(0, 1, 5 / 16);
+      push(1, 1, 1 / 16);
+    }
+  }
+  return out;
+}
+
+/** Full pipeline: imported bitmap → mask (+ tone/colour fields in tone mode). */
+export function extractFromImage(
+  image: ImportedImage,
+  GW: number,
+  GH: number,
+  p: PreprocessParams,
+): ExtractResult {
+  const img = rasterize(image.bitmap, GW, GH);
   const d = img.data;
-  const N = G * G;
+  const N = GW * GH;
   const alphaMode = hasAlpha(d);
   const [br, bg2, bb] = alphaMode ? [0, 0, 0] : borderColor(img);
 
   // luminance + validity field
   let lum: Float32Array = new Float32Array(N);
-  const valid = new Uint8Array(N); // cell participates (not transparent / not background)
+  const valid = new Uint8Array(N);
   for (let i = 0; i < N; i++) {
     const o = i * 4;
     const a = d[o + 3];
-    const l = 0.299 * d[o] + 0.587 * d[o + 1] + 0.114 * d[o + 2];
-    lum[i] = l;
+    lum[i] = 0.299 * d[o] + 0.587 * d[o + 1] + 0.114 * d[o + 2];
     if (alphaMode) {
       valid[i] = a > 128 ? 1 : 0;
-      // For alpha silhouettes the shape itself is the artwork: force full ink
-      // so threshold keeps sensible behaviour on e.g. white logos.
-      if (a > 128) lum[i] = 0;
     } else {
       valid[i] = 1;
       if (p.autoBackground) {
@@ -206,30 +249,58 @@ export function imageToMask(image: ImportedImage, G: number, p: PreprocessParams
     }
   }
 
+  // resolve auto mode: tonal when a meaningful share of valid cells are
+  // mid-tones (neither near-black nor near-white)
+  let resolvedMode: 'shape' | 'tone' = p.mode === 'tone' ? 'tone' : 'shape';
+  if (p.mode === 'auto') {
+    let mid = 0;
+    let total = 0;
+    for (let i = 0; i < N; i++) {
+      if (!valid[i]) continue;
+      total++;
+      if (lum[i] > 55 && lum[i] < 205) mid++;
+    }
+    resolvedMode = total > 0 && mid / total > 0.18 ? 'tone' : 'shape';
+  }
+
   // brightness / contrast
   const bAdd = (p.brightness / 100) * 128;
   const cFac = Math.tan(((p.contrast / 100) * 0.99 * Math.PI) / 4 + Math.PI / 4);
   if (p.brightness !== 0 || p.contrast !== 0) {
-    for (let i = 0; i < N; i++) {
-      lum[i] = (lum[i] - 128 + bAdd) * cFac + 128;
-    }
+    for (let i = 0; i < N; i++) lum[i] = (lum[i] - 128 + bAdd) * cFac + 128;
   }
 
-  if (p.blur > 0) lum = boxBlur(lum, G, Math.round(p.blur));
+  if (p.blur > 0) lum = boxBlur(lum, GW, GH, Math.round(p.blur));
   if (p.edgeDetect) {
-    // edges are bright → keep them "inked" by inverting into the dark-is-on space
-    const e = sobel(lum, G);
+    const e = sobel(lum, GW, GH);
     for (let i = 0; i < N; i++) lum[i] = 255 - e[i];
   }
 
+  if (resolvedMode === 'tone') {
+    // darkness field (1 = full ink), clamped, invalid cells transparent
+    const tone = new Float32Array(N);
+    const colors = new Uint8Array(N * 3);
+    for (let i = 0; i < N; i++) {
+      let t = 1 - Math.max(0, Math.min(255, lum[i])) / 255;
+      if (p.invert) t = 1 - t;
+      tone[i] = valid[i] ? t : 0;
+      colors[i * 3] = d[i * 4];
+      colors[i * 3 + 1] = d[i * 4 + 1];
+      colors[i * 3 + 2] = d[i * 4 + 2];
+    }
+    const mask = ditherFS(tone, GW, GH);
+    for (let i = 0; i < N; i++) if (!valid[i]) mask[i] = 0;
+    return { mask, tone, colors, resolvedMode };
+  }
+
+  // shape mode: alpha silhouettes ink the whole silhouette
   let mask: Uint8Array = new Uint8Array(N);
   for (let i = 0; i < N; i++) {
     if (!valid[i]) continue;
-    let on = lum[i] < p.threshold; // dark-on-light artwork by default
-    if (p.invert) on = !on;
+    let on = alphaMode ? true : lum[i] < p.threshold;
+    if (p.invert && !alphaMode) on = !on;
     if (on) mask[i] = 1;
   }
-
-  for (let k = 0; k < p.denoise; k++) mask = despeckle(mask, G, 2);
-  return mask;
+  for (let k = 0; k < p.denoise; k++) mask = despeckle(mask, GW, GH, 2);
+  return { mask, tone: null, colors: null, resolvedMode };
 }
