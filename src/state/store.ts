@@ -148,6 +148,9 @@ interface AppState {
   applyPreset(preset: ThemePreset): void;
   setBgOn(on: boolean): void;
   setImported(img: ImportedImage | null): void;
+  /** Import an image: the canvas aspect snaps to the image ratio, then the
+   *  mask/tone/colour fields are extracted in one atomic update. */
+  importImage(img: ImportedImage): void;
   setPreprocess(p: Partial<PreprocessParams>): void;
   applyImportToMask(pushUndo?: boolean): void;
   setViewMode(m: ViewMode): void;
@@ -345,6 +348,26 @@ export const useStore = create<AppState>((set, get) => ({
   setBgOn: (bgOn) => set({ bgOn }),
 
   setImported: (imported) => set({ imported }),
+
+  importImage: (img) => {
+    const s = get();
+    s.pushUndo();
+    const ar = Math.max(0.15, Math.min(6, img.width / Math.max(1, img.height)));
+    const preset = CANVAS_PRESETS.find((cp) => cp.aspect !== null && Math.abs(cp.aspect - ar) < 0.01);
+    const { GW, GH } = aspectToCells(ar);
+    const r = extractFromImage(img, GW, GH, s.preprocess);
+    set({
+      imported: img,
+      canvasPresetId: preset?.id ?? 'custom',
+      GW,
+      GH,
+      mask: r.mask,
+      tone: r.tone,
+      colors: r.colors,
+      maskRev: s.maskRev + 1,
+      viewMode: 'preview',
+    });
+  },
   setPreprocess: (p) => set((s) => ({ preprocess: { ...s.preprocess, ...p } })),
 
   applyImportToMask: (pushUndo = true) => {

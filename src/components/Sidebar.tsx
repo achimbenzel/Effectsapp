@@ -153,7 +153,6 @@ export function Sidebar() {
   const preprocess = useStore((s) => s.preprocess);
   const setPreprocess = useStore((s) => s.setPreprocess);
   const applyImportToMask = useStore((s) => s.applyImportToMask);
-  const setImported = useStore((s) => s.setImported);
 
   const palette = useStore((s) => s.palette);
   const setPalette = useStore((s) => s.setPalette);
@@ -176,9 +175,7 @@ export function Sidebar() {
   const onImportFile = async (file: File) => {
     try {
       const img = await decodeImageFile(file);
-      setImported(img);
-      applyImportToMask(true);
-      setViewMode('preview');
+      useStore.getState().importImage(img);
       showToast(`Imported ${file.name}`);
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Import failed', true);

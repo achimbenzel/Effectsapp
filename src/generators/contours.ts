@@ -165,7 +165,8 @@ function generate(ctx: GeneratorContext, p: ParamValues): SvgDoc {
     const isOuter = li === 0;
     const color = isOuter ? palette.secondary : palette.primary;
     const w = isOuter ? strokeW * 1.35 : strokeW;
-    body += `<path class="trace" d="${d}" fill="none" stroke="${color}" stroke-width="${f(w)}" stroke-linejoin="round" stroke-linecap="round"/>`;
+    // no entry-animation class: contours appear immediately and complete
+    body += `<path d="${d}" fill="none" stroke="${color}" stroke-width="${f(w)}" stroke-linejoin="round" stroke-linecap="round"/>`;
   });
 
   return { width: W, height: H, body };

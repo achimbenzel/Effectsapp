@@ -33,6 +33,8 @@
   --gloss-inset:0 1px 0 rgba(255,255,255,.75) inset;
   --glow:0 0 24px rgba(70,179,204,.3);
   --logo-color:var(--ink);
+  /* light keeps the aqua accent surface; darker text for contrast */
+  --on-accent:#03161c;
 }
 [data-theme='light'] body::before{
   background:
@@ -84,7 +86,11 @@
   --sky-blue:#e4e4e7;
   --sky-blue-rgb:228,228,231;
   --accent:#71717a;
+  --accent-rgb:113,113,122;
   --accent-bright:#a1a1aa;
+  --accent-grad-a:#fafafa;
+  --accent-grad-b:#e4e4e7;
+  --on-accent:#18181b;
   --blue-deep:#fafafa;
   --line:#27272a;
   --line-strong:#3f3f46;
@@ -147,7 +153,11 @@
   --sky-blue:#0a54d5;
   --sky-blue-rgb:10,84,213;
   --accent:#316ac5;
+  --accent-rgb:49,106,197;
   --accent-bright:#3d95ff;
+  --accent-grad-a:#7aa9f5;
+  --accent-grad-b:#1e56c4;
+  --on-accent:#ffffff;
   --blue-deep:#0a54d5;
   --line:#c8c5b2;
   --line-strong:#919077;
@@ -232,6 +242,9 @@
   --accent-bright:#b6f42e;
   --accent-rgb:124,196,16;
   --sky-blue-rgb:167,232,22;
+  --accent-grad-a:#cdf95c;
+  --accent-grad-b:#7cc410;
+  --on-accent:#0c1503;
   --blue-deep:#c8ff4a;
   --line:#22331d;
   --line-strong:#3a5530;

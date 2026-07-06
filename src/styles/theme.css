@@ -33,6 +33,12 @@
   --sq-coral:#5aa6e6;
   --sq-ink:#7fb4c4;
 
+  /* ===== Accent surface (glossy primary buttons, active chips) =====
+     Themes override these so no hardcoded aqua leaks through. */
+  --accent-grad-a:#7fdcf4;
+  --accent-grad-b:#46b3cc;
+  --on-accent:#03161c;           /* text/icon colour on the accent surface */
+
   --line:#1d3a46;               /* aqua hairline on dark */
   --line-strong:#2c5566;
 
@@ -103,11 +109,11 @@ body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
 .btn:hover{transform:translateY(-2px);border-color:var(--accent);
   box-shadow:var(--gloss-inset),0 10px 24px rgba(0,0,0,.45),var(--glow)}
 .btn:active{transform:translateY(0)}
-.btn--teal{color:#03161c;border-color:rgba(95,198,232,.6);
-  background:linear-gradient(180deg,#7fdcf4,#46b3cc);
-  box-shadow:var(--gloss-inset),0 6px 18px rgba(70,179,204,.45)}
-.btn--teal:hover{background:linear-gradient(180deg,#93e6fb,#5cc4da);
-  box-shadow:var(--gloss-inset),0 10px 26px rgba(70,179,204,.55)}
+.btn--teal{color:var(--on-accent);border-color:rgba(var(--sky-blue-rgb),.6);
+  background:linear-gradient(180deg,var(--accent-grad-a),var(--accent-grad-b));
+  box-shadow:var(--gloss-inset),0 6px 18px rgba(var(--accent-rgb),.45)}
+.btn--teal:hover{filter:brightness(1.07);
+  box-shadow:var(--gloss-inset),0 10px 26px rgba(var(--accent-rgb),.55)}
 .btn--cyan{color:#021019;border-color:rgba(90,166,230,.6);
   background:linear-gradient(180deg,#8fc4f4,#5aa6e6);
   box-shadow:var(--gloss-inset),0 6px 18px rgba(90,166,230,.45)}

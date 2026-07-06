@@ -1,7 +1,12 @@
 /** Settings dialog: UI chrome theme selection + custom CSS loading.
- *  Both persist to localStorage and apply live to the whole app. */
+ *  Both persist to localStorage and apply live to the whole app.
+ *
+ *  Rendered through a portal into <body>: ancestors with backdrop-filter
+ *  (the topbar) act as containing blocks for position:fixed, which used to
+ *  pin the overlay to the header instead of the viewport. */
 
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   UI_THEMES,
   getUiTheme,
@@ -47,7 +52,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
     }
   };
 
-  return (
+  return createPortal(
     <div className="overlay" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal-panel" role="dialog" aria-label="Settings">
         <div className="modal-head">
@@ -114,6 +119,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

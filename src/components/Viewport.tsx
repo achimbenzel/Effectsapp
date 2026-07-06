@@ -215,9 +215,7 @@ export function Viewport({ generated }: { generated: GeneratedResult }) {
     const s = useStore.getState();
     try {
       const img = await decodeImageFile(file);
-      s.setImported(img);
-      s.applyImportToMask();
-      s.setViewMode('preview');
+      s.importImage(img); // canvas ratio snaps to the image automatically
       s.showToast(`Imported ${file.name}`);
     } catch (err) {
       s.showToast(err instanceof Error ? err.message : 'Import failed', true);
